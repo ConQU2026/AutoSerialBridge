@@ -1,0 +1,148 @@
+cmake_minimum_required(VERSION 3.8)
+project(serial_pkg) # TODO: 修改为你的包名
+
+# ==============================================================================
+# 1. 编译选项 (Compiler Options)
+# ==============================================================================
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+# ==============================================================================
+# 2. 依赖管理 (Dependencies)
+# ==============================================================================
+
+
+set(dependencies
+  ament_cmake
+  rclcpp
+  rclcpp_action
+  std_msgs
+  nav_msgs
+  sensor_msgs
+  rclcpp_components
+  serial_driver
+  geometry_msgs
+  # TODO: 添加其他依赖 (如 pcl_conversions, cv_bridge)
+)
+
+foreach(dep ${dependencies})
+  find_package(${dep} REQUIRED)
+endforeach()
+
+# ==============================================================================
+# 3. 核心库构建
+# 编译为库，方便测试和复用
+# ==============================================================================
+add_library(${PROJECT_NAME}_lib SHARED
+  src/serial_controller.cpp
+)
+
+# 配置库的头文件和依赖
+target_include_directories(${PROJECT_NAME}_lib PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(${PROJECT_NAME}_lib ${dependencies})
+
+# 注册组件
+rclcpp_components_register_nodes(${PROJECT_NAME}_lib
+  "serial_pkg::SerialController"
+)
+
+# ==============================================================================
+# 4. 节点构建 (Node Executables)
+# ==============================================================================
+add_executable(serial_node
+  src/serial_node.cpp
+)
+
+
+set(targets
+  serial_node
+)
+
+foreach(target ${targets})
+  # 包含头文件
+  target_include_directories(${target} PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+
+  # 设置 C++ 标准
+  target_compile_features(${target} PUBLIC c_std_99 cxx_std_17)
+
+  # 链接依赖库
+  ament_target_dependencies(${target}
+    ${dependencies}
+  )
+
+  target_link_libraries(${target} ${PROJECT_NAME}_lib)
+endforeach()
+
+# ==============================================================================
+# 5. 安装规则
+# ==============================================================================
+install(TARGETS ${PROJECT_NAME}_lib
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+
+# 安装可执行文件
+install(TARGETS ${targets}
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# 安装文件夹 (include, launch, config)
+if(IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/ DESTINATION include/)
+endif()
+
+if(IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/launch)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/launch/ DESTINATION share/${PROJECT_NAME}/launch)
+endif()
+
+if(IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/config)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/config/ DESTINATION share/${PROJECT_NAME}/config)
+endif()
+
+if(IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/urdf)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/urdf/ DESTINATION share/${PROJECT_NAME}/urdf)
+endif()
+
+
+# ==============================================================================
+# 6. 测试部分
+# ==============================================================================
+if(BUILD_TESTING)
+  # --- A. 代码风格检查
+  # find_package(ament_lint_auto REQUIRED)
+  # set(ament_cmake_copyright_FOUND TRUE)
+  # set(ament_cmake_cpplint_FOUND TRUE)
+  # ament_lint_auto_find_test_dependencies()
+  find_package(ament_cmake_gtest REQUIRED)
+
+  file(GLOB TEST_FILES "${CMAKE_CURRENT_SOURCE_DIR}/test/test_*.cpp")
+
+  foreach(test_file ${TEST_FILES})
+
+    get_filename_component(test_name ${test_file} NAME_WE)
+
+    ament_add_gtest(${test_name} ${test_file})
+
+    if(TARGET ${PROJECT_NAME}_lib)
+      target_link_libraries(${test_name} ${PROJECT_NAME}_lib)
+    endif()
+
+    ament_target_dependencies(${test_name} ${dependencies})
+
+  endforeach()
+endif()
+
+# ==============================================================================
+# 7. 导出信息 (Export)
+# ==============================================================================
+ament_export_include_directories(include)
+ament_export_dependencies(${dependencies})
+ament_export_libraries(${PROJECT_NAME}_lib)
+ament_package()

@@ -1,0 +1,6 @@
+serial_pkg:
+  ros__parameters:
+    port: "/dev/ttyACM0"
+    baudrate: 115200
+    timeout: 0.1
+    serial_frequency: 100.0 # Hz
