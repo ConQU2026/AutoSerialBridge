@@ -83,16 +83,6 @@ void SerialController::register_rx_handlers()
 }
 ```
 
-### 3. 编译与运行
-
-```bash
-colcon build --packages-select serial_pkg
-source install/setup.bash
-
-# 运行节点
-ros2 run serial_pkg serial_node --ros-args -p port:=/dev/ttyUSB0 -p baudrate:=115200
-```
-
 ## 参数说明
 
 | 参数名 | 类型 | 默认值 | 说明 |
@@ -110,9 +100,15 @@ ros2 run serial_pkg serial_node --ros-args -p port:=/dev/ttyUSB0 -p baudrate:=11
 - **`src/serial_controller.cpp`**: 节点实现，在此处注册话题绑定。
 - **`src/serial_node.cpp`**: 程序入口。
 
+## TEST
+
+```bash
+colcon test --event-handlers console_cohesion+ --packages-select serial_pkg 
+```
+
 ## TODO
 
-- [ ] 自动生成电控对应 C 代码模块 (根据 protocol.hpp)。
+- [ ] 自动生成电控对应 C 代码模块。
 - [ ] udev script 自动配置串口权限。
-- [ ] 在 YAML 里面配置结构体，然后自动生成对应的 C++ 结构体代码。
+- [ ] 支持自定义接口
 

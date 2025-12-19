@@ -1,6 +1,7 @@
 #pragma once
 #include "serial_pkg/protocol.hpp"
 #include <vector>
+#include <deque>
 #include <cstring>
 #include <iostream>
 
@@ -10,24 +11,29 @@ namespace serial_pkg
   class PacketHandler
   {
   private:
-    std::vector<uint8_t> rx_buffer_;
+    std::deque<uint8_t> rx_buffer_;
 
   public:
-    uint8_t calculate_checksum(const uint8_t *data, size_t len)
+    template <typename Iterator>
+    static uint8_t calculate_checksum(Iterator start, size_t len)
     {
       uint8_t sum = 0;
       for (size_t i = 0; i < len; i++)
       {
-        sum += data[i];
+        sum += *start;
+        ++start;
       }
       return sum;
     }
 
     // 2. 打包函数 (ROS -> MCU)
     template <typename T>
-    std::vector<uint8_t> pack(PacketID id, const T &data)
+    std::vector<uint8_t> pack(PacketID id, const T &data) const
     {
+      static_assert(sizeof(T) <= 255, "Data size exceeds 255 bytes");
       std::vector<uint8_t> packet;
+      packet.reserve(sizeof(FrameHeader) + sizeof(T) + sizeof(FrameTail));
+
       // 1. 压入帧头
       packet.push_back(HEAD_BYTE);
       // 2. 压入 ID (强制转换成 uint8_t)
@@ -65,7 +71,7 @@ namespace serial_pkg
       {
         if (rx_buffer_[0] != HEAD_BYTE)
         {
-          rx_buffer_.erase(rx_buffer_.begin());
+          rx_buffer_.pop_front();
           continue;
         }
 
@@ -81,17 +87,17 @@ namespace serial_pkg
 
         if (rx_buffer_[total_len - 1] != TAIL_BYTE)
         {
-          rx_buffer_.erase(rx_buffer_.begin());
+          rx_buffer_.pop_front();
           continue;
         }
 
         // 检查校验和
-        uint8_t calc_sum = calculate_checksum(&rx_buffer_[1], data_len + 2);
+        uint8_t calc_sum = calculate_checksum(rx_buffer_.begin() + 1, data_len + 2);
         uint8_t recv_sum = rx_buffer_[total_len - 2];
 
         if (calc_sum != recv_sum)
         {
-          rx_buffer_.erase(rx_buffer_.begin());
+          rx_buffer_.pop_front();
           continue;
         }
 

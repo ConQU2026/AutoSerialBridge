@@ -5,6 +5,7 @@
 #include <vector>
 #include <map>
 #include <functional>
+#include <mutex>
 
 #include "rclcpp/rclcpp.hpp"
 #include "serial_driver/serial_driver.hpp"
@@ -30,10 +31,10 @@ namespace serial_pkg
     ~SerialController() override;
 
   private:
-    void get_parameters();                                     // 像查字典一样获取波特率等参数
-    void setup_serial();                                       // 像插插头一样初始化串口硬件
-    void start_receive();                                      // 开启异步接收
-    void async_send(const std::vector<uint8_t> &packet_bytes); // 异步发送
+    void get_parameters();
+    void setup_serial();
+    void start_receive();
+    void async_send(const std::vector<uint8_t> &packet_bytes);
 
     // 注册函数
     void register_rx_handlers(); // 注册接收处理 (Serial -> ROS)
@@ -49,6 +50,7 @@ namespace serial_pkg
     std::unique_ptr<drivers::serial_driver::SerialPortConfig> device_config_;
 
     PacketHandler packet_handler_;
+    std::mutex rx_mutex_; // 接收专用锁
 
     // 1. 接收处理映射表 (Rx: Serial -> ROS)
     using RxHandlerFunc = std::function<void(const Packet &)>;
@@ -90,13 +92,16 @@ namespace serial_pkg
             // 3. 发送 (异步)
             this->async_send(packet_bytes);
           });
+
+      // 打印调试信息
+      RCLCPP_DEBUG(this->get_logger(), "Subscribed to topic '%s' for packet ID 0x%02X", topic_name.c_str(), id);
       subscriptions_.push_back(sub);
     }
 
     /**
      * @brief 绑定串口接收数据到 ROS Topic 发布
      * @tparam MsgT ROS 消息类型 (如 geometry_msgs::msg::Twist)
-     * @tparam DataT 串口协议数据结构 (如 CmdVelData)
+     * @tparam DataT 串口协议数据结构 (如 在protocol.hpp 中 定义的 CmdVelData)
      * @param topic_name 发布的话题名
      * @param id 接收的数据包 ID
      * @param converter 将协议数据转换为 ROS 消息的 lambda 函数
@@ -123,8 +128,8 @@ namespace serial_pkg
         // c. 发布
         pub->publish(msg);
 
-        // 可选：打印调试信息
-        // RCLCPP_DEBUG(this->get_logger(), "Published msg from packet ID 0x%02X", pkt.id);
+        // 打印调试信息
+        RCLCPP_DEBUG(this->get_logger(), "Published msg from packet ID 0x%02X", pkt.id);
       };
     }
 
@@ -138,7 +143,5 @@ namespace serial_pkg
     uint32_t baudrate_;
     double timeout_;
     double serial_frequency_;
-
-    std::thread io_thread_;
   };
 } // namespace serial_pkg

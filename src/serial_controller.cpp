@@ -27,15 +27,6 @@ namespace serial_pkg
   {
     RCLCPP_INFO(this->get_logger(), "Shutting down SerialController node...");
 
-    if (ctx_)
-    {
-      ctx_->waitForExit();
-    }
-    if (io_thread_.joinable())
-    {
-      io_thread_.join();
-    }
-
     if (driver_)
     {
       driver_->port()->close();
@@ -48,19 +39,19 @@ namespace serial_pkg
     this->declare_parameter<std::string>("port", "/dev/ttyUSB0");
     this->declare_parameter<int>("baudrate", 115200);
     this->declare_parameter<double>("timeout", 0.1);
-    this->declare_parameter<double>("serial_frequency", 100.0);
+    // this->declare_parameter<double>("serial_frequency", 100.0);
 
     this->get_parameter("port", port_);
     int baudrate_temp;
     this->get_parameter("baudrate", baudrate_temp);
     baudrate_ = static_cast<uint32_t>(baudrate_temp);
     this->get_parameter("timeout", timeout_);
-    this->get_parameter("serial_frequency", serial_frequency_);
+    // this->get_parameter("serial_frequency", serial_frequency_);
 
     RCLCPP_INFO(this->get_logger(), "Port: %s", port_.c_str());
     RCLCPP_INFO(this->get_logger(), "Baudrate: %u", baudrate_);
     RCLCPP_INFO(this->get_logger(), "Timeout: %.2f", timeout_);
-    RCLCPP_INFO(this->get_logger(), "Serial Frequency: %.2f", serial_frequency_);
+    // RCLCPP_INFO(this->get_logger(), "Serial Frequency: %.2f", serial_frequency_);
   }
 
   void SerialController::setup_serial()
@@ -83,10 +74,6 @@ namespace serial_pkg
     {
       RCLCPP_ERROR(this->get_logger(), "Failed to open serial port: %s", e.what());
     }
-
-    // 启动 IoContext 线程
-    io_thread_ = std::thread([this]()
-                             { ctx_->waitForExit(); });
   }
 
   void SerialController::register_rx_handlers()
@@ -110,7 +97,7 @@ namespace serial_pkg
     // 注册发送处理函数 (ROS -> Serial)
     // 绑定 cmd_vel 话题到 ID_CMD_VEL 数据包
     bind_topic_to_serial<geometry_msgs::msg::Twist, CmdVelData>(
-        "cmd_vel",
+        "/cmd_vel",
         ID_CMD_VEL,
         [](const geometry_msgs::msg::Twist &msg)
         {
@@ -133,8 +120,12 @@ namespace serial_pkg
         {
           if (bytes_read > 0)
           {
-            std::vector<uint8_t> data = buffer;
-            packet_handler_.feed_data(data);
+            std::vector<uint8_t> actual_data(
+                buffer.begin(), buffer.begin() + bytes_read);
+
+            // 保护 packet_handler_，避免并发访问
+            std::lock_guard<std::mutex> lock(rx_mutex_);
+            packet_handler_.feed_data(actual_data);
 
             Packet pkt;
             while (packet_handler_.parse_packet(pkt))
@@ -159,7 +150,6 @@ namespace serial_pkg
     {
       try
       {
-        // 核心修改：直接调用，不要传第二个参数（lambda）
         driver_->port()->async_send(packet_bytes);
 
         RCLCPP_DEBUG(this->get_logger(), "Sent packet asynchronously, size: %zu", packet_bytes.size());

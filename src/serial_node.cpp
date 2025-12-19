@@ -7,8 +7,6 @@ int main(int argc, char *argv[])
 
   auto node = std::make_shared<serial_pkg::SerialController>(rclcpp::NodeOptions());
 
-  // TODO: 完善测试代码
-
   rclcpp::spin(node);
   rclcpp::shutdown();
   return 0;

@@ -121,10 +121,12 @@ if(BUILD_TESTING)
   # set(ament_cmake_cpplint_FOUND TRUE)
   # ament_lint_auto_find_test_dependencies()
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
 
-  file(GLOB TEST_FILES "${CMAKE_CURRENT_SOURCE_DIR}/test/test_*.cpp")
+  # --- B. C++ GTest
+  file(GLOB CPP_TEST_FILES "${CMAKE_CURRENT_SOURCE_DIR}/test/test_*.cpp")
 
-  foreach(test_file ${TEST_FILES})
+  foreach(test_file ${CPP_TEST_FILES})
 
     get_filename_component(test_name ${test_file} NAME_WE)
 
@@ -137,6 +139,9 @@ if(BUILD_TESTING)
     ament_target_dependencies(${test_name} ${dependencies})
 
   endforeach()
+
+  # --- C. Python Pytest
+  ament_add_pytest_test(my_python_tests test/)
 endif()
 
 # ==============================================================================

@@ -24,15 +24,33 @@ def generate_launch_description():
     # 1. 全局配置区
     # ========================================================================
     # 你的包名 
-    my_package_name = 'serial_pkg'
+    package_name = 'serial_pkg'
     
     # 获取 share 目录
-    my_pkg_share = get_package_share_directory(my_package_name)
+    my_pkg_share = get_package_share_directory(package_name)
     
     # 全局通用的配置文件路径
     common_config = os.path.join(my_pkg_share, 'config', 'serial_data.yaml')
+        
+    container = ComposableNodeContainer(
+            name= package_name + '_container',
+            namespace= '',
+            package='rclcpp_components',
+            executable='component_container', 
+            composable_node_descriptions=[
+                ComposableNode(
+                    package= package_name,
+                    plugin='serial_pkg::SerialController', # 必须与宏注册的名称一致
+                    name='serial_controller',
+                    parameters=[common_config],     
+                    extra_arguments=[{'use_intra_process_comms': True}] # 开启进程内通信
+                ),
+                # 你可以在这里继续添加其他组件，让它们跑在同一个进程里
+            ],
+            output='screen',
+        )
     
+    ld = LaunchDescription()
+    ld.add_action(container)
     
-    # component 节点配置
-
-
+    return ld
