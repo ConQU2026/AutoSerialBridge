@@ -5,9 +5,11 @@ int main(int argc, char *argv[])
 {
   rclcpp::init(argc, argv);
 
-  // auto node = std::make_shared<serial_pkg::SerialController>(rclcpp::NodeOptions());
+  auto node = std::make_shared<serial_pkg::SerialController>(rclcpp::NodeOptions());
 
-  // rclcpp::spin(node);
-  // rclcpp::shutdown();
+  // TODO: 完善测试代码
+
+  rclcpp::spin(node);
+  rclcpp::shutdown();
   return 0;
 }

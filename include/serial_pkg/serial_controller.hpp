@@ -30,9 +30,10 @@ namespace serial_pkg
     ~SerialController() override;
 
   private:
-    void get_parameters(); // 像查字典一样获取波特率等参数
-    void setup_serial();   // 像插插头一样初始化串口硬件
-    void receive_callback();
+    void get_parameters();                                     // 像查字典一样获取波特率等参数
+    void setup_serial();                                       // 像插插头一样初始化串口硬件
+    void start_receive();                                      // 开启异步接收
+    void async_send(const std::vector<uint8_t> &packet_bytes); // 异步发送
 
     // 注册函数
     void register_rx_handlers(); // 注册接收处理 (Serial -> ROS)
@@ -69,6 +70,7 @@ namespace serial_pkg
      * @param id 发送的数据包 ID
      * @param converter 将 ROS 消息转换为协议数据的 lambda 函数
      */
+
     template <typename MsgT, typename DataT>
     void bind_topic_to_serial(
         const std::string &topic_name,
@@ -85,12 +87,8 @@ namespace serial_pkg
             // 2. 打包
             auto packet_bytes = this->packet_handler_.pack<DataT>(id, data);
 
-            // 3. 发送
-            if (this->driver_ && this->driver_->port()->is_open())
-            {
-              this->driver_->port()->send(packet_bytes);
-              RCLCPP_DEBUG(this->get_logger(), "Sent packet ID 0x%02X", id);
-            }
+            // 3. 发送 (异步)
+            this->async_send(packet_bytes);
           });
       subscriptions_.push_back(sub);
     }
@@ -136,7 +134,11 @@ namespace serial_pkg
     rclcpp::TimerBase::SharedPtr timer_;
 
     // 参数变量
-    std::string device_name_;
-    uint32_t baud_rate_;
+    std::string port_;
+    uint32_t baudrate_;
+    double timeout_;
+    double serial_frequency_;
+
+    std::thread io_thread_;
   };
 } // namespace serial_pkg

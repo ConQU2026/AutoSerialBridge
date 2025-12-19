@@ -5,7 +5,7 @@ namespace serial_pkg
 {
   SerialController::SerialController(const rclcpp::NodeOptions &options)
       : Node("serial_controller", options),
-        ctx_(std::make_shared<drivers::common::IoContext>())
+        ctx_(std::make_shared<drivers::common::IoContext>(4)) // 启用4个线程
   {
     RCLCPP_INFO(this->get_logger(), "Initializing SerialController node...");
 
@@ -17,12 +17,25 @@ namespace serial_pkg
     // 注册所有的处理逻辑
     register_rx_handlers();
     register_tx_handlers();
+
+    // 启动接收
+    start_receive();
   }
 
   // 析构函数
   SerialController::~SerialController()
   {
     RCLCPP_INFO(this->get_logger(), "Shutting down SerialController node...");
+
+    if (ctx_)
+    {
+      ctx_->waitForExit();
+    }
+    if (io_thread_.joinable())
+    {
+      io_thread_.join();
+    }
+
     if (driver_)
     {
       driver_->port()->close();
@@ -32,28 +45,34 @@ namespace serial_pkg
   // 获取参数
   void SerialController::get_parameters()
   {
-    this->declare_parameter<std::string>("device_name", device_name_);
-    this->declare_parameter<int>("baud_rate", static_cast<int>(baud_rate_));
+    this->declare_parameter<std::string>("port", "/dev/ttyUSB0");
+    this->declare_parameter<int>("baudrate", 115200);
+    this->declare_parameter<double>("timeout", 0.1);
+    this->declare_parameter<double>("serial_frequency", 100.0);
 
-    this->get_parameter("device_name", device_name_);
-    int baud_rate_int;
-    this->get_parameter("baud_rate", baud_rate_int);
-    baud_rate_ = static_cast<uint32_t>(baud_rate_int);
+    this->get_parameter("port", port_);
+    int baudrate_temp;
+    this->get_parameter("baudrate", baudrate_temp);
+    baudrate_ = static_cast<uint32_t>(baudrate_temp);
+    this->get_parameter("timeout", timeout_);
+    this->get_parameter("serial_frequency", serial_frequency_);
 
-    RCLCPP_INFO(this->get_logger(), "Device Name: %s", device_name_.c_str());
-    RCLCPP_INFO(this->get_logger(), "Baud Rate: %u", baud_rate_);
+    RCLCPP_INFO(this->get_logger(), "Port: %s", port_.c_str());
+    RCLCPP_INFO(this->get_logger(), "Baudrate: %u", baudrate_);
+    RCLCPP_INFO(this->get_logger(), "Timeout: %.2f", timeout_);
+    RCLCPP_INFO(this->get_logger(), "Serial Frequency: %.2f", serial_frequency_);
   }
 
   void SerialController::setup_serial()
   {
     device_config_ = std::make_unique<drivers::serial_driver::SerialPortConfig>(
-        baud_rate_,
+        baudrate_,
         drivers::serial_driver::FlowControl::NONE,
         drivers::serial_driver::Parity::NONE,
         drivers::serial_driver::StopBits::ONE);
 
     driver_ = std::make_unique<drivers::serial_driver::SerialDriver>(*ctx_);
-    driver_->init_port(device_name_, *device_config_);
+    driver_->init_port(port_, *device_config_);
 
     try
     {
@@ -64,6 +83,10 @@ namespace serial_pkg
     {
       RCLCPP_ERROR(this->get_logger(), "Failed to open serial port: %s", e.what());
     }
+
+    // 启动 IoContext 线程
+    io_thread_ = std::thread([this]()
+                             { ctx_->waitForExit(); });
   }
 
   void SerialController::register_rx_handlers()
@@ -98,44 +121,53 @@ namespace serial_pkg
         });
   }
 
-  void SerialController::receive_callback()
+  void SerialController::start_receive()
   {
     if (!driver_ || !driver_->port()->is_open())
     {
-      RCLCPP_WARN(this->get_logger(), "Serial port is not open.");
       return;
     }
 
-    try
-    {
-      // 读取所有可用数据
-      std::vector<uint8_t> buffer(1024);
-      size_t bytes_read = driver_->port()->receive(buffer);
-
-      if (bytes_read > 0)
-      {
-        buffer.resize(bytes_read);
-        packet_handler_.feed_data(buffer);
-
-        // 循环解析所有完整的数据包
-        Packet pkt;
-        while (packet_handler_.parse_packet(pkt))
+    driver_->port()->async_receive(
+        [this](const std::vector<uint8_t> &buffer, const size_t bytes_read)
         {
-          // 查找并执行对应的处理函数
-          if (rx_handlers_.count(pkt.id))
+          if (bytes_read > 0)
           {
-            rx_handlers_[pkt.id](pkt);
+            std::vector<uint8_t> data = buffer;
+            packet_handler_.feed_data(data);
+
+            Packet pkt;
+            while (packet_handler_.parse_packet(pkt))
+            {
+              if (rx_handlers_.count(pkt.id))
+              {
+                rx_handlers_[pkt.id](pkt);
+              }
+              else
+              {
+                RCLCPP_WARN(this->get_logger(), "Unknown packet ID: 0x%02X", pkt.id);
+              }
+            }
           }
-          else
-          {
-            RCLCPP_WARN(this->get_logger(), "Unknown packet ID: 0x%02X", pkt.id);
-          }
-        }
-      }
-    }
-    catch (const std::exception &e)
+          this->start_receive();
+        });
+  }
+
+  void SerialController::async_send(const std::vector<uint8_t> &packet_bytes)
+  {
+    if (driver_ && driver_->port()->is_open())
     {
-      RCLCPP_ERROR(this->get_logger(), "Error receiving data: %s", e.what());
+      try
+      {
+        // 核心修改：直接调用，不要传第二个参数（lambda）
+        driver_->port()->async_send(packet_bytes);
+
+        RCLCPP_DEBUG(this->get_logger(), "Sent packet asynchronously, size: %zu", packet_bytes.size());
+      }
+      catch (const std::exception &e)
+      {
+        RCLCPP_ERROR(this->get_logger(), "Async send failed: %s", e.what());
+      }
     }
   }
 } // namespace serial_pkg
