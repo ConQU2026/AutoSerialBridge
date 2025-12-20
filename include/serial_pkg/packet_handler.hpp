@@ -59,7 +59,7 @@ namespace auto_serial_bridge
     // 3. 接收数据投喂口
     void feed_data(const std::vector<uint8_t> &raw_data)
     {
-      // Note: std::deque does not have reserve(), but insert is still efficient
+      // Bulk insert is efficient for deque (amortized O(1) at both ends)
       rx_buffer_.insert(rx_buffer_.end(), raw_data.begin(), raw_data.end());
     }
 
@@ -104,7 +104,7 @@ namespace auto_serial_bridge
         out_packet.id = static_cast<PacketID>(id_byte);
         out_packet.data_buffer.clear();
         // Only reserve if current capacity is insufficient
-        if (out_packet.data_buffer.capacity() < static_cast<size_t>(data_len)) {
+        if (out_packet.data_buffer.capacity() < data_len) {
           out_packet.data_buffer.reserve(data_len);
         }
         out_packet.data_buffer.assign(
