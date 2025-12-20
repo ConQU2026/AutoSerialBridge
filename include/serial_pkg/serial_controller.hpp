@@ -6,6 +6,7 @@
 #include <map>
 #include <functional>
 #include <mutex>
+#include <atomic>
 
 #include "rcutils/logging.h"
 #include "rclcpp/rclcpp.hpp"
@@ -33,15 +34,19 @@ namespace auto_serial_bridge
 
   private:
     void get_parameters();
-    void setup_serial();
     void start_receive();
     void async_send(const std::vector<uint8_t> &packet_bytes);
+
+    // 连接状态与重连相关
+    void check_connection(); // 定时器回调：检查并尝试重连
+    void reset_serial();     // 关闭并清理串口资源
+    bool try_open_serial();  // 尝试打开串口
 
     // 注册函数
     void register_rx_handlers(); // 注册接收处理 (Serial -> ROS)
     void register_tx_handlers(); // 注册发送处理 (ROS -> Serial)
 
-    // IoContext 处理数据的流动
+    // IoContext 处理数据
     std::shared_ptr<drivers::common::IoContext> ctx_;
 
     // SerialDriver 执行具体的读写动作
@@ -94,7 +99,6 @@ namespace auto_serial_bridge
             this->async_send(packet_bytes);
           });
 
-      // 打印调试信息
       RCLCPP_DEBUG(this->get_logger(), "Subscribed to topic '%s' for packet ID 0x%02X", topic_name.c_str(), id);
       subscriptions_.push_back(sub);
     }
@@ -120,16 +124,11 @@ namespace auto_serial_bridge
       // 2. 注册接收回调
       rx_handlers_[id] = [this, pub, converter](const Packet &pkt)
       {
-        // a. 转换数据结构
         DataT data = pkt.as<DataT>();
-
-        // b. 转换为 ROS 消息
         MsgT msg = converter(data);
 
-        // c. 发布
         pub->publish(msg);
 
-        // 打印调试信息
         RCLCPP_DEBUG(this->get_logger(), "Published msg from packet ID 0x%02X", pkt.id);
       };
     }
@@ -138,6 +137,7 @@ namespace auto_serial_bridge
 
     Packet current_packet;
     rclcpp::TimerBase::SharedPtr timer_;
+    std::atomic<bool> is_connected_{false};
 
     // 参数变量
     std::string port_;

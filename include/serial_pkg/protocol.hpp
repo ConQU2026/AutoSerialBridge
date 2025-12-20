@@ -39,7 +39,7 @@ struct __attribute__((packed)) CmdVelData
 struct Packet
 {
   PacketID id;
-  std::vector<uint8_t> data_buffer; // To hold the data
+  std::vector<uint8_t> data_buffer; 
 
   // 辅助函数：将二进制数据转换为具体结构体
   template <typename T>
