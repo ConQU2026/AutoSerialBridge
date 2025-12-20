@@ -36,7 +36,7 @@ namespace serial_pkg
   // 获取参数
   void SerialController::get_parameters()
   {
-    this->declare_parameter<std::string>("port", "/dev/ttyUSB0");
+    this->declare_parameter<std::string>("port", "/dev/ttyACM0");
     this->declare_parameter<int>("baudrate", 115200);
     this->declare_parameter<double>("timeout", 0.1);
     // this->declare_parameter<double>("serial_frequency", 100.0);
