@@ -159,19 +159,29 @@ namespace auto_serial_bridge
             RCLCPP_DEBUG(this->get_logger(),
                          "Received %zu bytes", bytes_read);
 
-            std::vector<uint8_t> actual_data(
-                buffer.begin(), buffer.begin() + bytes_read);
+            // Avoid unnecessary copy by creating a view of only the valid data
             {
               std::lock_guard<std::mutex> lock(rx_mutex_);
-              packet_handler_.feed_data(actual_data);
+              // Feed only the valid portion of the buffer
+              if (bytes_read == buffer.size())
+              {
+                packet_handler_.feed_data(buffer);
+              }
+              else
+              {
+                std::vector<uint8_t> actual_data(
+                    buffer.begin(), buffer.begin() + bytes_read);
+                packet_handler_.feed_data(actual_data);
+              }
             }
 
             Packet pkt;
             while (packet_handler_.parse_packet(pkt))
             {
-              if (rx_handlers_.count(pkt.id))
+              auto it = rx_handlers_.find(pkt.id);
+              if (it != rx_handlers_.end())
               {
-                rx_handlers_[pkt.id](pkt);
+                it->second(pkt);
               }
             }
 

@@ -31,8 +31,9 @@ namespace auto_serial_bridge
     std::vector<uint8_t> pack(PacketID id, const T &data) const
     {
       static_assert(sizeof(T) <= 255, "Data size exceeds 255 bytes");
+      const size_t packet_size = sizeof(FrameHeader) + sizeof(T) + sizeof(FrameTail);
       std::vector<uint8_t> packet;
-      packet.reserve(sizeof(FrameHeader) + sizeof(T) + sizeof(FrameTail));
+      packet.reserve(packet_size);
 
       // 1. 压入帧头
       packet.push_back(HEAD_BYTE);
@@ -41,12 +42,9 @@ namespace auto_serial_bridge
       // 3. 压入数据长度
       packet.push_back(sizeof(T));
 
-      // 4. 压入数据
+      // 4. 压入数据 (使用批量插入优化)
       const uint8_t *ptr = reinterpret_cast<const uint8_t *>(&data);
-      for (size_t i = 0; i < sizeof(T); i++)
-      {
-        packet.push_back(ptr[i]);
-      }
+      packet.insert(packet.end(), ptr, ptr + sizeof(T));
 
       // 5. 压入校验
       // 校验范围：从功能码 (Index 1) 开始，到数据段结束
@@ -61,6 +59,7 @@ namespace auto_serial_bridge
     // 3. 接收数据投喂口
     void feed_data(const std::vector<uint8_t> &raw_data)
     {
+      // Note: std::deque does not have reserve(), but insert is still efficient
       rx_buffer_.insert(rx_buffer_.end(), raw_data.begin(), raw_data.end());
     }
 
@@ -101,8 +100,10 @@ namespace auto_serial_bridge
           continue;
         }
 
-        // 提取数据
+        // 提取数据 (reserve capacity to avoid reallocation)
         out_packet.id = static_cast<PacketID>(id_byte);
+        out_packet.data_buffer.clear();
+        out_packet.data_buffer.reserve(data_len);
         out_packet.data_buffer.assign(
             rx_buffer_.begin() + sizeof(FrameHeader),
             rx_buffer_.begin() + sizeof(FrameHeader) + data_len);

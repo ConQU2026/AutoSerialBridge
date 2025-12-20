@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <map>
+#include <unordered_map>
 #include <functional>
 #include <mutex>
 #include <atomic>
@@ -16,6 +16,16 @@
 
 #include "serial_pkg/packet_handler.hpp"
 #include "serial_pkg/protocol.hpp"
+
+// Hash function for PacketID enum to use with unordered_map
+namespace std {
+  template<>
+  struct hash<PacketID> {
+    std::size_t operator()(const PacketID& id) const noexcept {
+      return std::hash<uint8_t>{}(static_cast<uint8_t>(id));
+    }
+  };
+}
 
 namespace auto_serial_bridge
 {
@@ -60,7 +70,7 @@ namespace auto_serial_bridge
 
     // 1. 接收处理映射表 (Rx: Serial -> ROS)
     using RxHandlerFunc = std::function<void(const Packet &)>;
-    std::map<PacketID, RxHandlerFunc> rx_handlers_;
+    std::unordered_map<PacketID, RxHandlerFunc> rx_handlers_;
 
     // 2. 发送订阅列表 (Tx: ROS -> Serial)
     // 使用 vector 保存所有 subscription 以维持生命周期
