@@ -100,10 +100,15 @@ namespace auto_serial_bridge
           continue;
         }
 
-        // 提取数据 (reserve capacity to avoid reallocation)
+        // 提取数据 (clear and reserve capacity to avoid reallocation)
         out_packet.id = static_cast<PacketID>(id_byte);
-        out_packet.data_buffer.clear();
-        out_packet.data_buffer.reserve(data_len);
+        // Only clear if we need different data size to preserve capacity
+        if (out_packet.data_buffer.capacity() < data_len) {
+          out_packet.data_buffer.clear();
+          out_packet.data_buffer.reserve(data_len);
+        } else {
+          out_packet.data_buffer.clear();
+        }
         out_packet.data_buffer.assign(
             rx_buffer_.begin() + sizeof(FrameHeader),
             rx_buffer_.begin() + sizeof(FrameHeader) + data_len);

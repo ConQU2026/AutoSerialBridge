@@ -159,15 +159,15 @@ namespace auto_serial_bridge
             RCLCPP_DEBUG(this->get_logger(),
                          "Received %zu bytes", bytes_read);
 
-            // Avoid unnecessary copy by creating a view of only the valid data
+            // Avoid unnecessary copy by using buffer directly when fully consumed
             {
               std::lock_guard<std::mutex> lock(rx_mutex_);
               // Feed only the valid portion of the buffer
-              if (bytes_read == buffer.size())
+              if (bytes_read > 0 && bytes_read == buffer.size())
               {
                 packet_handler_.feed_data(buffer);
               }
-              else
+              else if (bytes_read > 0)
               {
                 std::vector<uint8_t> actual_data(
                     buffer.begin(), buffer.begin() + bytes_read);
