@@ -163,7 +163,7 @@ namespace auto_serial_bridge
             {
               std::lock_guard<std::mutex> lock(rx_mutex_);
               // Feed only the valid portion of the buffer
-              if (bytes_read > 0 && bytes_read == buffer.size())
+              if (bytes_read == buffer.size())
               {
                 packet_handler_.feed_data(buffer);
               }

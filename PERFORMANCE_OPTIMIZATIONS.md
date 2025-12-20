@@ -88,11 +88,11 @@ std::vector<uint8_t> actual_data(buffer.begin(), buffer.begin() + bytes_read);
 packet_handler_.feed_data(actual_data);
 ```
 
-**Fix**: Only copy when necessary (when bytes_read < buffer.size()) and handle edge cases:
+**Fix**: Only copy when necessary (when bytes_read < buffer.size()):
 
 ```cpp
-// After (conditional copy with edge case handling)
-if (bytes_read > 0 && bytes_read == buffer.size()) {
+// After (conditional copy)
+if (bytes_read == buffer.size()) {
     packet_handler_.feed_data(buffer);  // No copy
 } else if (bytes_read > 0) {
     std::vector<uint8_t> actual_data(buffer.begin(), buffer.begin() + bytes_read);
@@ -100,7 +100,7 @@ if (bytes_read > 0 && bytes_read == buffer.size()) {
 }
 ```
 
-**Impact**: Eliminates unnecessary memory allocation and copying in the common case where the full buffer is used, with proper handling of edge cases.
+**Impact**: Eliminates unnecessary memory allocation and copying in the common case where the full buffer is used.
 
 ### 5. Vector Capacity Reservation (packet_handler.hpp)
 
@@ -133,21 +133,20 @@ out_packet.id = static_cast<PacketID>(id_byte);
 out_packet.data_buffer.assign(...);
 ```
 
-**Fix**: Smart capacity management - only reserve if needed, otherwise preserve existing capacity:
+**Fix**: Smart capacity management - clear first, then only reserve if needed:
 
 ```cpp
 // After
 out_packet.id = static_cast<PacketID>(id_byte);
-if (out_packet.data_buffer.capacity() < data_len) {
-    out_packet.data_buffer.clear();
+out_packet.data_buffer.clear();
+// Only reserve if current capacity is insufficient
+if (out_packet.data_buffer.capacity() < static_cast<size_t>(data_len)) {
     out_packet.data_buffer.reserve(data_len);
-} else {
-    out_packet.data_buffer.clear();
 }
 out_packet.data_buffer.assign(...);
 ```
 
-**Impact**: Preserves allocated capacity when sufficient, avoiding unnecessary reallocation. Particularly beneficial when processing packets of similar sizes repeatedly.
+**Impact**: Preserves allocated capacity when sufficient, avoiding unnecessary reallocation. Particularly beneficial when processing packets of similar sizes repeatedly. The cast to size_t ensures type-safe comparison.
 
 ## Performance Metrics
 
@@ -159,9 +158,9 @@ A standalone test was created to validate the optimizations. Results from 10,000
 
 ## Code Review Feedback Addressed
 
-1. **Hash Function Location**: Moved hash specialization out of std namespace into auto_serial_bridge namespace as a custom hasher struct
-2. **Edge Case Handling**: Added proper checks for bytes_read > 0 before buffer operations
-3. **Capacity Management**: Improved clear/reserve logic to preserve capacity when appropriate
+1. **Hash Function Location**: Moved hash specialization out of std namespace into auto_serial_bridge namespace as a custom hasher struct (C++ standard compliance)
+2. **Code Clarity**: Simplified conditional logic by moving common operations outside conditionals
+3. **Type Safety**: Added explicit size_t cast in capacity comparisons to avoid signed/unsigned mismatch warnings
 
 ## Code Quality Improvements
 
