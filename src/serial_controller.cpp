@@ -1,3 +1,7 @@
+#include <chrono>
+#include <sstream>
+#include <iomanip>
+
 #include "serial_pkg/serial_controller.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
 
@@ -5,7 +9,7 @@ namespace auto_serial_bridge
 {
   SerialController::SerialController(const rclcpp::NodeOptions &options)
       : Node("serial_controller", options),
-        ctx_(std::make_shared<drivers::common::IoContext>(4)) // 启用4个线程
+        ctx_(std::make_shared<drivers::common::IoContext>(2)) // 启用2个线程
   {
     RCLCPP_INFO(this->get_logger(), "Initializing SerialController node...");
 
@@ -25,7 +29,7 @@ namespace auto_serial_bridge
   // 析构函数
   SerialController::~SerialController()
   {
-    RCLCPP_INFO(this->get_logger(), "Shutting down SerialController node...");
+    RCLCPP_INFO(this->get_logger(), "正在关闭串口节点...");
 
     if (driver_)
     {
@@ -42,7 +46,7 @@ namespace auto_serial_bridge
     // this->declare_parameter<double>("serial_frequency", 100.0);
 
     this->get_parameter("port", port_);
-    int baudrate_temp;
+    int baudrate_temp = 115200;
     this->get_parameter("baudrate", baudrate_temp);
     baudrate_ = static_cast<uint32_t>(baudrate_temp);
     this->get_parameter("timeout", timeout_);
@@ -111,19 +115,20 @@ namespace auto_serial_bridge
   void SerialController::start_receive()
   {
     if (!driver_ || !driver_->port()->is_open())
-    {
       return;
-    }
 
     driver_->port()->async_receive(
-        [this](const std::vector<uint8_t> &buffer, const size_t bytes_read)
+        [this](const std::vector<uint8_t> &buffer,
+               const size_t bytes_read)
         {
+          RCLCPP_DEBUG(this->get_logger(), "havn't come in async_receive callback");
           if (bytes_read > 0)
           {
+            // 用于debug接收数据部分
+            RCLCPP_DEBUG(this->get_logger(), "Received %zu bytes from serial port.", bytes_read);
+
             std::vector<uint8_t> actual_data(
                 buffer.begin(), buffer.begin() + bytes_read);
-
-            // 保护 packet_handler_，避免并发访问
             std::lock_guard<std::mutex> lock(rx_mutex_);
             packet_handler_.feed_data(actual_data);
 
@@ -134,13 +139,16 @@ namespace auto_serial_bridge
               {
                 rx_handlers_[pkt.id](pkt);
               }
-              else
-              {
-                RCLCPP_WARN(this->get_logger(), "Unknown packet ID: 0x%02X", pkt.id);
-              }
             }
+
+            // 只有成功读取数据后才继续接收
+            this->start_receive();
           }
-          this->start_receive();
+          else
+          {
+            RCLCPP_WARN(this->get_logger(),
+                        "串口断开或读取为空，停止接收循环。");
+          }
         });
   }
 
@@ -153,6 +161,22 @@ namespace auto_serial_bridge
         driver_->port()->async_send(packet_bytes);
 
         RCLCPP_DEBUG(this->get_logger(), "Sent packet asynchronously, size: %zu", packet_bytes.size());
+
+        if (!rcutils_logging_logger_is_enabled_for(
+                this->get_logger().get_name(),
+                RCUTILS_LOG_SEVERITY_DEBUG))
+        {
+          return;
+        }
+
+        // 1. 创建一个字符串流
+        std::stringstream ss;
+        for (auto byte : packet_bytes)
+        {
+          ss << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(byte) << " ";
+        }
+        // 输出发送的16进制packet数据包
+        RCLCPP_DEBUG(this->get_logger(), "Packet bytes: %s", ss.str().c_str());
       }
       catch (const std::exception &e)
       {

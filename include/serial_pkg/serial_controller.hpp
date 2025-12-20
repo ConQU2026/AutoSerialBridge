@@ -7,6 +7,7 @@
 #include <functional>
 #include <mutex>
 
+#include "rcutils/logging.h"
 #include "rclcpp/rclcpp.hpp"
 #include "serial_driver/serial_driver.hpp"
 #include "io_context/io_context.hpp"

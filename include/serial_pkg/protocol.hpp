@@ -10,7 +10,7 @@ const uint8_t TAIL_BYTE = 0x55;
 // 2. 功能码 ID 定义
 enum PacketID : uint8_t
 {
-  ID_CMD_VEL = 0x01, // 发送：控制指令
+  ID_CMD_VEL = 0x02, // 发送：控制指令
 };
 
 // 3. 基础帧结构

@@ -19,7 +19,7 @@ import struct
 # Protocol constants
 HEAD_BYTE = 0xAA
 TAIL_BYTE = 0x55
-ID_CMD_VEL = 0x01
+ID_CMD_VEL = 0x02
 
 @pytest.mark.launch_test
 def generate_test_description():
