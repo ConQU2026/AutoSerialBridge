@@ -20,10 +20,10 @@ namespace
 
     // 准备原始数据
     TestData sent_data = {1.23f, -4.56f, 100};
-    PacketID ID_CMD_VEL = PacketID::ID_CMD_VEL;
+    PacketID id = kCmdVel;
 
     // 执行打包
-    std::vector<uint8_t> buffer = handler.pack(ID_CMD_VEL, sent_data);
+    std::vector<uint8_t> buffer = handler.pack(id, sent_data);
 
     // 检查打包后的长度是否正确
     // Header(3) + Data(12) + Checksum(1) + Tail(1) = 17 bytes
@@ -38,7 +38,7 @@ namespace
 
     // 验证结果
     ASSERT_TRUE(success);
-    EXPECT_EQ(out_packet.id, ID_CMD_VEL);
+    EXPECT_EQ(out_packet.id, id);
 
     // 把 buffer 里的字节还原回结构体进行比对
     TestData received_data;
@@ -54,7 +54,7 @@ namespace
   {
     PacketHandler handler;
     TestData data = {1.0f, 2.0f, 3};
-    auto buffer = handler.pack(PacketID::ID_CMD_VEL, data);
+    auto buffer = handler.pack(kCmdVel, data);
 
     // 先投喂前半段数据
     std::vector<uint8_t> part1(buffer.begin(), buffer.begin() + 5);
@@ -75,7 +75,7 @@ namespace
   {
     PacketHandler handler;
     TestData data = {1.0f, 1.0f, 1};
-    auto buffer = handler.pack(PacketID::ID_CMD_VEL, data);
+    auto buffer = handler.pack(kCmdVel, data);
 
     // 故意破坏数据（改动中间的一个字节）
     buffer[5] ^= 0xFF;

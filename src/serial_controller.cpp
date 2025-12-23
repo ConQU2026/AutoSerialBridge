@@ -11,7 +11,7 @@ namespace auto_serial_bridge
       : Node("serial_controller", options),
         ctx_(std::make_shared<drivers::common::IoContext>(2))
   {
-    RCLCPP_INFO(this->get_logger(), "Initializing SerialController node...");
+    RCLCPP_INFO(this->get_logger(), "正在初始化串口控制节点...");
 
     packet_handler_ = PacketHandler();
 
@@ -54,8 +54,8 @@ namespace auto_serial_bridge
     baudrate_ = static_cast<uint32_t>(baudrate_temp);
     this->get_parameter("timeout", timeout_);
 
-    RCLCPP_INFO(this->get_logger(), "Port: %s", port_.c_str());
-    RCLCPP_INFO(this->get_logger(), "Baudrate: %u", baudrate_);
+    RCLCPP_INFO(this->get_logger(), "端口: %s", port_.c_str());
+    RCLCPP_INFO(this->get_logger(), "波特率: %u", baudrate_);
   }
 
   bool SerialController::try_open_serial()
@@ -114,10 +114,10 @@ namespace auto_serial_bridge
   void SerialController::register_rx_handlers()
   {
     // 注册接收处理函数 (Serial -> ROS)
-    // 示例：将 ID_CMD_VEL 数据包绑定到 /cmd_vel_feedback 话题
+    // 示例：将 kCmdVel 数据包绑定到 /cmd_vel_feedback 话题
     bind_serial_to_topic<geometry_msgs::msg::Twist, CmdVelData>(
         "cmd_vel_feedback",
-        ID_CMD_VEL,
+        kCmdVel,
         [](const CmdVelData &data)
         {
           geometry_msgs::msg::Twist msg;
@@ -130,10 +130,10 @@ namespace auto_serial_bridge
   void SerialController::register_tx_handlers()
   {
     // 注册发送处理函数 (ROS -> Serial)
-    // 绑定 cmd_vel 话题到 ID_CMD_VEL 数据包
+    // 绑定 cmd_vel 话题到 kCmdVel 数据包
     bind_topic_to_serial<geometry_msgs::msg::Twist, CmdVelData>(
         "/cmd_vel",
-        ID_CMD_VEL,
+        kCmdVel,
         [](const geometry_msgs::msg::Twist &msg)
         {
           CmdVelData data;
@@ -157,7 +157,7 @@ namespace auto_serial_bridge
           if (bytes_read > 0)
           {
             RCLCPP_DEBUG(this->get_logger(),
-                         "Received %zu bytes", bytes_read);
+                         "收到 %zu 字节数据", bytes_read);
 
             std::vector<uint8_t> actual_data(
                 buffer.begin(), buffer.begin() + bytes_read);
@@ -201,7 +201,7 @@ namespace auto_serial_bridge
         driver_->port()->async_send(packet_bytes);
 
         RCLCPP_DEBUG(this->get_logger(),
-                     "Sent packet asynchronously, size: %zu",
+                     "异步发送数据包, 大小: %zu",
                      packet_bytes.size());
 
         if (!rcutils_logging_logger_is_enabled_for(
@@ -217,7 +217,7 @@ namespace auto_serial_bridge
           ss << std::hex << std::uppercase << std::setw(2)
              << std::setfill('0') << static_cast<int>(byte) << " ";
         }
-        RCLCPP_DEBUG(this->get_logger(), "Packet bytes: %s",
+        RCLCPP_DEBUG(this->get_logger(), "数据包内容: %s",
                      ss.str().c_str());
       }
       catch (const std::exception &e)
