@@ -1,0 +1,27 @@
+# Build directories
+build/
+install/
+log/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Compiled files
+*.o
+*.so
+*.a
+*.out
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# ROS specific
+devel/
+.catkin_workspace
+_codeql_detected_source_root

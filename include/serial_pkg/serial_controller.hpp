@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <map>
+#include <unordered_map>
 #include <functional>
 #include <mutex>
 #include <atomic>
@@ -19,6 +19,15 @@
 
 namespace auto_serial_bridge
 {
+  // Hash function for PacketID enum to use with unordered_map
+  struct PacketIDHash
+  {
+    std::size_t operator()(const PacketID &id) const noexcept
+    {
+      return std::hash<uint8_t>{}(static_cast<uint8_t>(id));
+    }
+  };
+
   /**
    * @brief 串口控制节点
    *
@@ -68,14 +77,14 @@ namespace auto_serial_bridge
      *
      * 定时器回调函数，用于监控串口连接状态并尝试重连。
      */
-    void check_connection(); 
+    void check_connection();
 
     /**
      * @brief 重置串口
      *
      * 关闭串口并清理相关资源。
      */
-    void reset_serial();     
+    void reset_serial();
 
     /**
      * @brief 尝试打开串口
@@ -83,7 +92,7 @@ namespace auto_serial_bridge
      * @return true 打开成功
      * @return false 打开失败
      */
-    bool try_open_serial();  
+    bool try_open_serial();
 
     // 注册函数
     /**
@@ -98,7 +107,7 @@ namespace auto_serial_bridge
      *
      * 绑定 ROS Topic 订阅者到具体的协议 ID 发送逻辑。
      */
-    void register_tx_handlers(); 
+    void register_tx_handlers();
 
     // IoContext 处理数据
     std::shared_ptr<drivers::common::IoContext> ctx_;
@@ -114,7 +123,7 @@ namespace auto_serial_bridge
 
     // 1. 接收处理映射表 (Rx: Serial -> ROS)
     using RxHandlerFunc = std::function<void(const Packet &)>;
-    std::map<PacketID, RxHandlerFunc> rx_handlers_;
+    std::unordered_map<PacketID, RxHandlerFunc, PacketIDHash> rx_handlers_;
 
     // 2. 发送订阅列表 (Tx: ROS -> Serial)
     // 使用 vector 保存所有 subscription 以维持生命周期
