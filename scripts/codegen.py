@@ -104,8 +104,9 @@ def generate_mcu_header(config, messages, type_mappings, protocol_hash, output_p
             f.write(f"    {line},\n")
         f.write("};\n")
 
-def generate_mcu_source(messages, output_path):
+def generate_mcu_source(config, messages, output_path):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    buffer_size = config.get('buffer_size', 256)
     
     with open(output_path, 'w') as f:
         f.write("#include \"protocol.h\"\n")
@@ -124,8 +125,8 @@ typedef enum {
 } State;
 
 static State rx_state = STATE_WAIT_HEADER1;
-static uint8_t rx_buffer[256]; // 最大包长
-static uint8_t rx_cnt = 0;
+static uint8_t rx_buffer[{buffer_size}]; // 定义的最大包长
+static uint16_t rx_cnt = 0;
 static uint8_t rx_data_len = 0;
 static uint8_t rx_id = 0;
 static uint8_t rx_crc = 0;
@@ -158,7 +159,7 @@ void protocol_fsm_feed(uint8_t byte) {
         case STATE_WAIT_HEADER1:
             if (byte == FRAME_HEADER1) {
                 rx_state = STATE_WAIT_HEADER2;
-                rx_crc = 0; // CRC 重置 (假设CRC不包含Header1，根据你的定义调整)
+                rx_crc = 0; // CRC 重置，校验不包含 Frame Header
             }
             break;
             
@@ -172,13 +173,13 @@ void protocol_fsm_feed(uint8_t byte) {
             
         case STATE_WAIT_ID:
             rx_id = byte;
-            rx_crc = CRC8_TABLE[0 ^ rx_id]; // 开始计算 CRC (假设包含 ID)
+            rx_crc = CRC8_TABLE[0 ^ rx_id]; // 开始计算 CRC，校验包含 ID
             rx_state = STATE_WAIT_LEN;
             break;
             
         case STATE_WAIT_LEN:
             rx_data_len = byte;
-            rx_crc = CRC8_TABLE[rx_crc ^ rx_data_len]; // CRC 包含 Len
+            rx_crc = CRC8_TABLE[rx_crc ^ rx_data_len]; // CRC 计算，校验包含 Len
             rx_cnt = 0;
             if (rx_data_len > 0) {
                 rx_state = STATE_WAIT_DATA;
@@ -189,7 +190,7 @@ void protocol_fsm_feed(uint8_t byte) {
             
         case STATE_WAIT_DATA:
             rx_buffer[rx_cnt++] = byte;
-            rx_crc = CRC8_TABLE[rx_crc ^ byte]; // CRC 包含 Data
+            rx_crc = CRC8_TABLE[rx_crc ^ byte]; // CRC 计算，校验包含 Data
             if (rx_cnt >= rx_data_len) {
                 rx_state = STATE_WAIT_CRC;
             }
@@ -378,6 +379,27 @@ def generate_ros_bindings(messages, type_mappings, output_path):
         f.write("}\n") # namespace
         f.write("}\n") # namespace
 
+def generate_cpp_config(config, output_path):
+    """生成C++公共配置头文件。"""
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    with open(output_path, 'w') as f:
+        f.write("#pragma once\n\n")
+        f.write("namespace auto_serial_bridge {\n")
+        f.write("namespace config {\n\n")
+        
+        f.write(f"    constexpr uint32_t DEFAULT_BAUDRATE = {config['baudrate']};\n")
+        f.write(f"    constexpr size_t BUFFER_SIZE = {config['buffer_size']};\n")
+        f.write(f"    constexpr uint8_t CFG_FRAME_HEADER1 = {config['head_byte_1']};\n")
+        f.write(f"    constexpr uint8_t CFG_FRAME_HEADER2 = {config['head_byte_2']};\n")
+        
+        # 转换校验算法配置字符串
+        checksum_algo = config.get('checksum', 'CRC8')
+        f.write(f"    // Checksum Algorithm: {checksum_algo}\n")
+        
+        f.write("\n}\n")
+        f.write("}\n")
+
 def main():
     if len(sys.argv) < 3:
         print("Usage: codegen.py <protocol_yaml> <output_dir>")
@@ -393,13 +415,27 @@ def main():
         content = f.read()
         config_data = yaml.safe_load(content)
         
+    # --- 验证配置 ---
+    cfg = config_data.get('config', {})
+    if cfg.get('checksum', 'CRC8') != 'CRC8':
+        print(f"Error: Unsupported checksum algorithm '{cfg.get('checksum')}'. Only 'CRC8' is supported currently.")
+        sys.exit(1)
+        
+    if 'head_byte_1' not in cfg or 'head_byte_2' not in cfg:
+        print("Error: Protocol must define 'head_byte_1' and 'head_byte_2'.")
+        sys.exit(1)
+    # ----------------
+        
     phash = calculate_protocol_hash(content)
     
     generate_mcu_header(config_data['config'], config_data['messages'], config_data['type_mappings'], phash, 
                         os.path.join(output_dir, 'mcu_output', 'protocol.h'))
     
-    generate_mcu_source(config_data['messages'], 
+    generate_mcu_source(config_data['config'], config_data['messages'], 
                         os.path.join(output_dir, 'mcu_output', 'protocol.c'))
+                        
+    generate_cpp_config(config_data['config'],
+                        os.path.join(output_dir, 'include', 'serial_pkg', 'generated_config.hpp'))
                         
     generate_ros_bindings(config_data['messages'], config_data['type_mappings'], 
                           os.path.join(output_dir, 'include', 'serial_pkg', 'generated_bindings.hpp'))

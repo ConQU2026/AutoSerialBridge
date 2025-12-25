@@ -38,7 +38,7 @@ messages:
   # === 业务消息 ===
   # ROS -> MCU: 速度控制
   - name: "CmdVel"
-    id: 0x03
+    id: 0x04
     direction: "tx"
     sub_topic: "/cmd_vel"
     ros_msg: "geometry_msgs/msg/Twist" # 指定 ROS 消息类型
@@ -49,7 +49,7 @@ messages:
 
   # MCU -> ROS: 里程计反馈
   - name: "ChassisStatus"
-    id: 0x04
+    id: 0x05
     direction: "rx"
     pub_topic: "/odom"
     ros_msg: "nav_msgs/msg/Odometry"

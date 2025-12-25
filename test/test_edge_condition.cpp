@@ -12,7 +12,7 @@ protected:
 
 // 1. 未知 ID 测试
 TEST_F(EdgeCaseTest, UnknownID) {
-    // 手动构造具有 ID 0xFF 的数据包 (假设未知)
+    // 手动构造具有 ID 0xFF 的数据包 
     uint8_t unknown_id = 0xFF;
     std::vector<uint8_t> data = {0x01, 0x02};
     uint8_t len = data.size();
@@ -96,7 +96,10 @@ TEST_F(EdgeCaseTest, PartialThenValid) {
     uint8_t test_id = 0x01;
     
     // 数据包 1: 部分数据
-    std::vector<uint8_t> part1 = {FRAME_HEADER1, FRAME_HEADER2, test_id, 10}; // 声明有 10 字节
+    // 我们声明 len=5. Request size = 2+1+1+5+1 = 10 bytes.
+    // 我们实际发送 6 bytes (part1) + 6 bytes (valid pkt) = 12 bytes.
+    // 12 >= 10, 所以解析器会尝试解析, 发现CRC错误, 然后重同步.
+    std::vector<uint8_t> part1 = {FRAME_HEADER1, FRAME_HEADER2, test_id, 5}; 
     // 发送 2 字节
     part1.push_back(0x01);
     part1.push_back(0x02);
@@ -108,9 +111,9 @@ TEST_F(EdgeCaseTest, PartialThenValid) {
     EXPECT_FALSE(handler.parse_packet(out));
     
     // 数据包 2: 完整有效
-    // ID=3 (CmdVel), len 8
-    Packet_CmdVel data = {1.0f, 2.0f};
-    std::vector<uint8_t> valid_pkt = handler.pack(PACKET_ID_CMDVEL, data);
+    // ID=1 (Heartbeat), len 1
+    Packet_Heartbeat data = {100};
+    std::vector<uint8_t> valid_pkt = handler.pack(PACKET_ID_HEARTBEAT, data);
     
     handler.feed_data(valid_pkt);
     
@@ -118,7 +121,7 @@ TEST_F(EdgeCaseTest, PartialThenValid) {
     // 处理器将首先尝试解析部分数据包，CRC 失败，然后滑动窗口直到找到有效数据包。
     
     ASSERT_TRUE(handler.parse_packet(out));
-    EXPECT_EQ(out.id, PACKET_ID_CMDVEL);
+    EXPECT_EQ(out.id, PACKET_ID_HEARTBEAT);
 }
 
 // 5. 环形缓冲区回绕
@@ -148,18 +151,19 @@ TEST_F(EdgeCaseTest, RingBufferWrapAround) {
     
     // 2. 投喂一个长于 2 字节的有效数据包。
     // 它将分割: 一部分在数组末尾，一部分在数组开头。
-    Packet_CmdVel data = {1.23f, 4.56f};
-    std::vector<uint8_t> split_pkt = handler.pack(PACKET_ID_CMDVEL, data);
+    // Handshake: 4 bytes payload, total 4(Head+ID+Len)+4(Data)+1(CRC) = 9 bytes
+    Packet_Handshake data = {0x12345678};
+    std::vector<uint8_t> split_pkt = handler.pack(PACKET_ID_HANDSHAKE, data);
     
     handler.feed_data(split_pkt);
     
     // 3. 解析。逻辑必须处理内存不连续性。
     ASSERT_TRUE(handler.parse_packet(out));
-    EXPECT_EQ(out.id, PACKET_ID_CMDVEL);
+    EXPECT_EQ(out.id, PACKET_ID_HANDSHAKE);
     
     // 验证载荷数据完整性
-    Packet_CmdVel payload = out.as<Packet_CmdVel>();
-    EXPECT_FLOAT_EQ(payload.linear_x, 1.23f);
+    Packet_Handshake payload = out.as<Packet_Handshake>();
+    EXPECT_EQ(payload.protocol_hash, 0x12345678);
 }
 
 // 粘包测试
@@ -170,9 +174,9 @@ TEST_F(EdgeCaseTest, StickyPackets) {
     // Packet 1: Heartbeat
     auto pkt1 = handler.pack(PACKET_ID_HEARTBEAT, Packet_Heartbeat{10});
     
-    // Packet 2: CmdVel
-    Packet_CmdVel data = {1.0f, 2.0f};
-    auto pkt2 = handler.pack(PACKET_ID_CMDVEL, data);
+    // Packet 2: Heartbeat with different value
+    Packet_Heartbeat data = {15};
+    auto pkt2 = handler.pack(PACKET_ID_HEARTBEAT, data);
     
     // Packet 3: Heartbeat
     auto pkt3 = handler.pack(PACKET_ID_HEARTBEAT, Packet_Heartbeat{20});
@@ -192,8 +196,8 @@ TEST_F(EdgeCaseTest, StickyPackets) {
     
     // 应该提取第 2 个
     ASSERT_TRUE(handler.parse_packet(out));
-    EXPECT_EQ(out.id, PACKET_ID_CMDVEL);
-    EXPECT_FLOAT_EQ(out.as<Packet_CmdVel>().linear_x, 1.0f);
+    EXPECT_EQ(out.id, PACKET_ID_HEARTBEAT);
+    EXPECT_EQ(out.as<Packet_Heartbeat>().count, 15);
     
     // 应该提取第 3 个
     ASSERT_TRUE(handler.parse_packet(out));
@@ -206,8 +210,8 @@ TEST_F(EdgeCaseTest, StickyPackets) {
 
 // 7. 逐字节分片测试
 TEST_F(EdgeCaseTest, ByteByByteFeed) {
-    Packet_CmdVel data = {5.5f, 6.6f};
-    std::vector<uint8_t> pkt = handler.pack(PACKET_ID_CMDVEL, data);
+    Packet_Heartbeat data = {55};
+    std::vector<uint8_t> pkt = handler.pack(PACKET_ID_HEARTBEAT, data);
     
     Packet out;
     
@@ -225,8 +229,8 @@ TEST_F(EdgeCaseTest, ByteByByteFeed) {
         }
     }
     
-    Packet_CmdVel payload = out.as<Packet_CmdVel>();
-    EXPECT_FLOAT_EQ(payload.linear_x, 5.5f);
+    Packet_Heartbeat payload = out.as<Packet_Heartbeat>();
+    EXPECT_EQ(payload.count, 55);
 }
 
 // 8. 伪帧头混淆测试

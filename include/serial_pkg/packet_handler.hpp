@@ -180,4 +180,4 @@ namespace auto_serial_bridge
     
   };
 
-}
+} // namespace auto_serial_bridge

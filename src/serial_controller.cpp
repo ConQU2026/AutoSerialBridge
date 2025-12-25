@@ -4,6 +4,7 @@
 
 #include "serial_pkg/serial_controller.hpp"
 #include "serial_pkg/generated_bindings.hpp" // 生成的绑定代码
+#include "serial_pkg/generated_config.hpp"   // 生成的配置常数
 #include "rclcpp_components/register_node_macro.hpp"
 
 namespace auto_serial_bridge
@@ -12,7 +13,7 @@ namespace auto_serial_bridge
       : Node("serial_controller", options),
         state_(State::WAITING_HANDSHAKE),
         ctx_(std::make_shared<drivers::common::IoContext>(2)),
-        packet_handler_(4096) // 缓冲区大小从配置读取（此处暂硬编码）
+        packet_handler_(auto_serial_bridge::config::BUFFER_SIZE)
   {
     RCLCPP_INFO(this->get_logger(), "Initializing SerialController...");
 
@@ -62,11 +63,11 @@ namespace auto_serial_bridge
   void SerialController::get_parameters()
   {
     this->declare_parameter<std::string>("port", "/dev/ttyACM0");
-    this->declare_parameter<int>("baudrate", 921600);
+    this->declare_parameter<int>("baudrate", auto_serial_bridge::config::DEFAULT_BAUDRATE);
     this->declare_parameter<double>("timeout", 0.1);
 
     this->get_parameter("port", port_);
-    int baudrate_temp = 921600;
+    int baudrate_temp = auto_serial_bridge::config::DEFAULT_BAUDRATE;
     this->get_parameter("baudrate", baudrate_temp);
     baudrate_ = static_cast<uint32_t>(baudrate_temp);
     this->get_parameter("timeout", timeout_);

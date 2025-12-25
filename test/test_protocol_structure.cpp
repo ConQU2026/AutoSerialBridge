@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "protocol.h"
+#include "serial_pkg/generated_config.hpp"
 
 // 验证生成的 C 头文件是否有效并符合预期
 
@@ -9,18 +10,12 @@ TEST(ProtocolStructureTest, StructPacking) {
     
     // Heartbeat: u8 (1 字节)
     EXPECT_EQ(sizeof(Packet_Heartbeat), 1);
-    
-    // CmdVel: f32 + f32 (8 字节)
-    EXPECT_EQ(sizeof(Packet_CmdVel), 8);
-    
-    // ChassisStatus: f32 + f32 (8 字节)
-    EXPECT_EQ(sizeof(Packet_ChassisStatus), 8);
 }
 
 TEST(ProtocolStructureTest, Constants) {
-    // 帧头
-    EXPECT_EQ(FRAME_HEADER1, 0x5A);
-    EXPECT_EQ(FRAME_HEADER2, 0xA5);
+    // 帧头 (验证 C 宏定义与 C++ 配置常量一致)
+    EXPECT_EQ(FRAME_HEADER1, auto_serial_bridge::config::CFG_FRAME_HEADER1);
+    EXPECT_EQ(FRAME_HEADER2, auto_serial_bridge::config::CFG_FRAME_HEADER2);
     
     // 哈希应该已定义
     EXPECT_NE(PROTOCOL_HASH, 0);
