@@ -31,6 +31,25 @@ foreach(dep ${dependencies})
 endforeach()
 
 # ==============================================================================
+# 2.5 代码生成 (Code Generation)
+# ==============================================================================
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+set(PROTOCOL_YAML "${CMAKE_CURRENT_SOURCE_DIR}/config/protocol.yaml")
+set(CODEGEN_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/scripts/codegen.py")
+set(MCU_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/mcu_output/protocol.h")
+set(ROS_BINDINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/serial_pkg/generated_bindings.hpp")
+
+add_custom_command(
+  OUTPUT ${MCU_HEADER} ${ROS_BINDINGS}
+  COMMAND ${Python3_EXECUTABLE} ${CODEGEN_SCRIPT} ${PROTOCOL_YAML} ${CMAKE_CURRENT_SOURCE_DIR}
+  DEPENDS ${PROTOCOL_YAML} ${CODEGEN_SCRIPT}
+  COMMENT "Generating protocol code..."
+)
+
+add_custom_target(generate_protocol_code DEPENDS ${MCU_HEADER} ${ROS_BINDINGS})
+
+# ==============================================================================
 # 3. 核心库构建
 # 编译为库，方便测试和复用
 # ==============================================================================
@@ -38,9 +57,12 @@ add_library(${PROJECT_NAME}_lib SHARED
   src/serial_controller.cpp
 )
 
+add_dependencies(${PROJECT_NAME}_lib generate_protocol_code)
+
 # 配置库的头文件和依赖
 target_include_directories(${PROJECT_NAME}_lib PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/mcu_output>
   $<INSTALL_INTERFACE:include>
 )
 ament_target_dependencies(${PROJECT_NAME}_lib ${dependencies})

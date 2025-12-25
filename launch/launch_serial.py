@@ -7,6 +7,10 @@ from launch_ros.actions import Node, ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
 
 def generate_launch_description():
+    """生成启动描述。
+
+    启动SerialController节点，并加载配置文件。
+    """
     package_name = 'auto_serial_bridge'
     
     my_pkg_share = get_package_share_directory(package_name)

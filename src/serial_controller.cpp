@@ -3,59 +3,75 @@
 #include <iomanip>
 
 #include "serial_pkg/serial_controller.hpp"
+#include "serial_pkg/generated_bindings.hpp" // 生成的绑定代码
 #include "rclcpp_components/register_node_macro.hpp"
 
 namespace auto_serial_bridge
 {
   SerialController::SerialController(const rclcpp::NodeOptions &options)
       : Node("serial_controller", options),
-        ctx_(std::make_shared<drivers::common::IoContext>(2))
+        state_(State::WAITING_HANDSHAKE),
+        ctx_(std::make_shared<drivers::common::IoContext>(2)),
+        packet_handler_(4096) // 缓冲区大小从配置读取（此处暂硬编码）
   {
-    RCLCPP_INFO(this->get_logger(), "正在初始化串口控制节点...");
-
-    packet_handler_ = PacketHandler();
+    RCLCPP_INFO(this->get_logger(), "Initializing SerialController...");
 
     get_parameters();
+    
+    // 注册所有 ROS 订阅者
+    auto_serial_bridge::generated::register_all(this);
 
-    // 注册所有的处理逻辑
-    register_rx_handlers();
-    register_tx_handlers();
-
-    // 初始化串口配置，但不立即打开串口
+    // 设备配置
     device_config_ = std::make_unique<drivers::serial_driver::SerialPortConfig>(
         baudrate_,
         drivers::serial_driver::FlowControl::NONE,
         drivers::serial_driver::Parity::NONE,
         drivers::serial_driver::StopBits::ONE);
 
-    // 创建定时器：每 1 秒检查一次连接并尝试重连
+    // 连接检查定时器
     timer_ = this->create_wall_timer(
         std::chrono::milliseconds(1000),
         std::bind(&SerialController::check_connection, this));
+        
+    // 心跳/握手定时器 (1Hz)
+    heartbeat_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(1000),
+        [this]() {
+            if (!is_connected_) return;
+            
+            if (state_ == State::WAITING_HANDSHAKE) {
+                // 发送握手请求
+                Packet_Handshake pkt;
+                pkt.protocol_hash = PROTOCOL_HASH;
+                send_packet(PACKET_ID_HANDSHAKE, pkt);
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Waiting for Handshake (Hash: 0x%08X)...", PROTOCOL_HASH);
+            } else {
+                // 发送心跳包
+                // Packet_Heartbeat pkt;
+                // pkt.count++; 
+                // send_packet(PACKET_ID_HEARTBEAT, pkt);
+            }
+        });
   }
 
-  // 析构函数
   SerialController::~SerialController()
   {
-    RCLCPP_INFO(this->get_logger(), "正在关闭串口节点...");
     reset_serial();
   }
 
-  // 获取参数
   void SerialController::get_parameters()
   {
     this->declare_parameter<std::string>("port", "/dev/ttyACM0");
-    this->declare_parameter<int>("baudrate", 115200);
+    this->declare_parameter<int>("baudrate", 921600);
     this->declare_parameter<double>("timeout", 0.1);
 
     this->get_parameter("port", port_);
-    int baudrate_temp = 115200;
+    int baudrate_temp = 921600;
     this->get_parameter("baudrate", baudrate_temp);
     baudrate_ = static_cast<uint32_t>(baudrate_temp);
     this->get_parameter("timeout", timeout_);
 
-    RCLCPP_INFO(this->get_logger(), "端口: %s", port_.c_str());
-    RCLCPP_INFO(this->get_logger(), "波特率: %u", baudrate_);
+    RCLCPP_INFO(this->get_logger(), "Port: %s, Baudrate: %u", port_.c_str(), baudrate_);
   }
 
   bool SerialController::try_open_serial()
@@ -63,13 +79,12 @@ namespace auto_serial_bridge
     try
     {
       reset_serial();
-
       driver_ = std::make_unique<drivers::serial_driver::SerialDriver>(*ctx_);
       driver_->init_port(port_, *device_config_);
       driver_->port()->open();
       return driver_->port()->is_open();
     }
-    catch (const std::exception &)
+    catch (const std::exception &e)
     {
       return false;
     }
@@ -85,112 +100,70 @@ namespace auto_serial_bridge
       }
       driver_.reset();
     }
+    state_ = State::WAITING_HANDSHAKE;
   }
 
   void SerialController::check_connection()
   {
-    if (is_connected_)
-    {
-      return;
-    }
-
-    RCLCPP_WARN(this->get_logger(),
-                "串口未连接，正在尝试连接设备: %s ...",
-                port_.c_str());
+    if (is_connected_) return;
 
     if (try_open_serial())
     {
-      RCLCPP_INFO(this->get_logger(), ">>> 串口重连成功！恢复通信 <<<");
+      RCLCPP_INFO(this->get_logger(), "Serial connected. Waiting for handshake...");
       is_connected_ = true;
+      state_ = State::WAITING_HANDSHAKE;
       start_receive();
     }
     else
     {
-      RCLCPP_ERROR(this->get_logger(),
-                   "连接失败: 找不到设备或权限不足 (将在1秒后重试)");
+      // Silent retry or log only occasionally
     }
   }
-
-  void SerialController::register_rx_handlers()
-  {
-    // 注册接收处理函数 (Serial -> ROS)
-    // 示例：将 kCmdVel 数据包绑定到 /cmd_vel_feedback 话题
-    bind_serial_to_topic<geometry_msgs::msg::Twist, CmdVelData>(
-        "cmd_vel_feedback",
-        kCmdVel,
-        [](const CmdVelData &data)
-        {
-          geometry_msgs::msg::Twist msg;
-          msg.linear.x = data.linear_x;
-          msg.angular.z = data.angular_z;
-          return msg;
-        });
-  }
-
-  void SerialController::register_tx_handlers()
-  {
-    // 注册发送处理函数 (ROS -> Serial)
-    // 绑定 cmd_vel 话题到 kCmdVel 数据包
-    bind_topic_to_serial<geometry_msgs::msg::Twist, CmdVelData>(
-        "/cmd_vel",
-        kCmdVel,
-        [](const geometry_msgs::msg::Twist &msg)
-        {
-          CmdVelData data;
-          data.linear_x = static_cast<float>(msg.linear.x);
-          data.angular_z = static_cast<float>(msg.angular.z);
-          return data;
-        });
+  
+  void SerialController::process_handshake(const Packet& pkt) {
+      if (pkt.payload.size() != sizeof(Packet_Handshake)) return;
+      
+      const Packet_Handshake* data = reinterpret_cast<const Packet_Handshake*>(pkt.payload.data());
+      if (data->protocol_hash == PROTOCOL_HASH) {
+          state_ = State::RUNNING;
+          RCLCPP_INFO(this->get_logger(), "Handshake SUCCESS! Protocol Hash Matched. Entering RUNNING state.");
+      } else {
+          RCLCPP_ERROR(this->get_logger(), "Handshake FAILED! Hash mismatch. Local: 0x%08X, Remote: 0x%08X", PROTOCOL_HASH, data->protocol_hash);
+      }
   }
 
   void SerialController::start_receive()
   {
-    if (!is_connected_ || !driver_ || !driver_->port()->is_open())
-    {
-      return;
-    }
+    if (!is_connected_ || !driver_ || !driver_->port()->is_open()) return;
 
     driver_->port()->async_receive(
-        [this](const std::vector<uint8_t> &buffer,
-               const size_t bytes_read)
+        [this](const std::vector<uint8_t> &buffer, const size_t bytes_read)
         {
           if (bytes_read > 0)
           {
-            RCLCPP_DEBUG(this->get_logger(),
-                         "收到 %zu 字节数据", bytes_read);
-
-            // Avoid unnecessary copy by using buffer directly when fully consumed
-            {
-              std::lock_guard<std::mutex> lock(rx_mutex_);
-              // Feed only the valid portion of the buffer
-              if (bytes_read == buffer.size())
-              {
-                packet_handler_.feed_data(buffer);
-              }
-              else if (bytes_read > 0)
-              {
-                std::vector<uint8_t> actual_data(
-                    buffer.begin(), buffer.begin() + bytes_read);
-                packet_handler_.feed_data(actual_data);
-              }
-            }
-
-            Packet pkt;
-            while (packet_handler_.parse_packet(pkt))
-            {
-              auto it = rx_handlers_.find(pkt.id);
-              if (it != rx_handlers_.end())
-              {
-                it->second(pkt);
-              }
-            }
-
-            this->start_receive();
+             {
+                 std::lock_guard<std::mutex> lock(rx_mutex_);
+                 packet_handler_.feed_data(buffer.data(), bytes_read); //零拷贝意图（虽然 buffer 是 vector）
+             }
+             
+             Packet pkt;
+             while (packet_handler_.parse_packet(pkt)) {
+                 if (pkt.id == PACKET_ID_HANDSHAKE) {
+                     process_handshake(pkt);
+                     // 允许将握手包也转发给 ROS? 生成的代码确实暴露了它。
+                     auto_serial_bridge::generated::dispatch_packet(this, static_cast<uint8_t>(pkt.id), pkt.payload);
+                 } else if (state_ == State::RUNNING) {
+                     auto_serial_bridge::generated::dispatch_packet(this, static_cast<uint8_t>(pkt.id), pkt.payload);
+                 } else {
+                     // 如果未握手成功，丢弃数据包
+                 }
+             }
+             
+             this->start_receive();
           }
           else
           {
-            RCLCPP_ERROR(this->get_logger(),
-                         "!!! 检测到串口断开或读取异常 !!!");
+            RCLCPP_ERROR(this->get_logger(), "Read error/close.");
             is_connected_ = false;
             reset_serial();
           }
@@ -199,46 +172,26 @@ namespace auto_serial_bridge
 
   void SerialController::async_send(const std::vector<uint8_t> &packet_bytes)
   {
-    if (!is_connected_)
+    if (!is_connected_ || !driver_ || !driver_->port()->is_open()) return;
+    
+    // 在 WAITING_HANDSHAKE 状态下, 只允许发送握手数据包?
+    // 如果我们需要严格的输出控制，可以在这里过滤。
+    // 实现:
+    // 数据包类型在第二个字节? 我们不想在这里解析。
+    // 依赖其他地方的逻辑。
+    
+    try
     {
-      return;
-    }
-
-    if (driver_ && driver_->port()->is_open())
-    {
-      try
-      {
         driver_->port()->async_send(packet_bytes);
-
-        RCLCPP_DEBUG(this->get_logger(),
-                     "异步发送数据包, 大小: %zu",
-                     packet_bytes.size());
-
-        if (!rcutils_logging_logger_is_enabled_for(
-                this->get_logger().get_name(),
-                RCUTILS_LOG_SEVERITY_DEBUG))
-        {
-          return;
-        }
-
-        std::stringstream ss;
-        for (auto byte : packet_bytes)
-        {
-          ss << std::hex << std::uppercase << std::setw(2)
-             << std::setfill('0') << static_cast<int>(byte) << " ";
-        }
-        RCLCPP_DEBUG(this->get_logger(), "数据包内容: %s",
-                     ss.str().c_str());
-      }
-      catch (const std::exception &e)
-      {
-        RCLCPP_ERROR(this->get_logger(),
-                     "发送失败 (设备可能已拔出): %s", e.what());
+    }
+    catch (const std::exception &e)
+    {
+        RCLCPP_ERROR(this->get_logger(), "Send error: %s", e.what());
         is_connected_ = false;
         reset_serial();
-      }
     }
   }
+
 } // namespace auto_serial_bridge
 
 RCLCPP_COMPONENTS_REGISTER_NODE(auto_serial_bridge::SerialController)

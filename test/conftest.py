@@ -27,7 +27,7 @@ def socat_process():
 	p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
 											 stderr=subprocess.DEVNULL)
 
-	# wait for device nodes
+	# 等待设备节点
 	for _ in range(40):
 		if os.path.exists("/tmp/vtty0") and os.path.exists("/tmp/vtty1"):
 			break
@@ -55,7 +55,7 @@ def serial_ports(socat_process):
 	s0 = serial.Serial("/tmp/vtty0", baudrate=115200, timeout=1)
 	s1 = serial.Serial("/tmp/vtty1", baudrate=115200, timeout=1)
 
-	# flush any initial data
+	# 清空任何初始数据
 	try:
 		s0.reset_input_buffer()
 		s1.reset_input_buffer()
@@ -67,22 +67,6 @@ def serial_ports(socat_process):
 	s0.close()
 	s1.close()
 
- 
-# @pytest.fixture(scope="function")
-# def create_cmd_vel_publisher():
-# 	rclpy.init()
-# 	node = rclpy.create_node("cmd_vel_publisher")
-
-# 	publisher = node.create_publisher(
-# 		msg_type=rclpy.qos.QoSProfile(depth=10),
-# 		topic="cmd_vel",
-# 		qos_profile=rclpy.qos.QoSProfile(depth=10),
-# 	)
-
-# 	yield node, publisher
-
-# 	node.destroy_node()
-# 	rclpy.shutdown()
 
 
 

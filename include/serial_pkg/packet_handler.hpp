@@ -1,9 +1,9 @@
 #pragma once
+
 #include "serial_pkg/protocol.hpp"
 #include <vector>
-#include <deque>
-#include <cstring>
 #include <iostream>
+#include <algorithm>
 
 namespace auto_serial_bridge
 {
@@ -11,154 +11,173 @@ namespace auto_serial_bridge
   /**
    * @brief 数据包处理类
    *
-   * 负责数据的校验、打包和解包。维护一个接收缓冲区，并处理粘包和断包问题。
+   * 负责数据的校验、打包和解包。使用环形缓冲区实现零拷贝和高性能解析。
    */
   class PacketHandler
   {
   private:
-    std::deque<uint8_t> rx_buffer_;
+    std::vector<uint8_t> ring_buffer_;
+    size_t head_ = 0; // Write index
+    size_t tail_ = 0; // Read index
+    size_t capacity_;
+    
+    // 最小包长: Header(2) + ID(1) + Len(1) + CRC(1) = 5 字节 (假设载荷为0)
+    static constexpr size_t MIN_PACKET_SIZE = 5; 
 
   public:
-    /**
-     * @brief 计算校验和
-     *
-     * 计算给定数据段的累加和。
-     *
-     * @tparam Iterator 迭代器类型
-     * @param start 数据起始迭代器
-     * @param len 数据长度
-     * @return uint8_t 校验和结果
-     */
-    template <typename Iterator>
-    //改为CRC8
-    static uint8_t calculate_checksum(Iterator start, size_t len)
+    explicit PacketHandler(size_t buffer_size) : capacity_(buffer_size + 1)
     {
-      uint8_t sum = 0;
-      for (size_t i = 0; i < len; i++)
+       ring_buffer_.resize(capacity_);
+    }
+
+    /**
+     * @brief 计算校验和 (查表法)
+     */
+    static uint8_t calculate_checksum(const uint8_t* data, size_t len)
+    {
+      uint8_t crc = 0;
+      for (size_t i = 0; i < len; ++i)
       {
-        sum += *start;
-        ++start;
+        crc = CRC8_TABLE[crc ^ data[i]];
       }
-      return sum;
+      return crc;
     }
 
     /**
      * @brief 打包数据 (ROS -> MCU)
-     *
-     * 将数据结构体打包成串口通信协议格式的字节流。
-     *
-     * @tparam T 数据结构体类型
-     * @param id 功能码
-     * @param data 数据对象
-     * @return std::vector<uint8_t> 打包后的字节流
      */
     template <typename T>
     std::vector<uint8_t> pack(PacketID id, const T &data) const
     {
-      static_assert(sizeof(T) <= 255, "Data size exceeds 255 bytes");
-      const size_t packet_size = sizeof(FrameHeader) + sizeof(T) + sizeof(FrameTail);
+      static_assert(sizeof(T) <= 255, "数据大小不能超过255字节");
+      // 双帧头 + ID + 长度 + 数据 + CRC = 2 + 1 + 1 + N + 1 = 5 + N
+      const size_t packet_size = 5 + sizeof(T);
       std::vector<uint8_t> packet;
       packet.reserve(packet_size);
 
-      // 1. 压入帧头
-      packet.push_back(kHeadByte);
-      // 2. 压入 ID (强制转换成 uint8_t)
+      packet.push_back(FRAME_HEADER1);
+      packet.push_back(FRAME_HEADER2);
       packet.push_back(static_cast<uint8_t>(id));
-
-      // 3. 压入数据长度
-      packet.push_back(sizeof(T));
-
-      // 4. 压入数据 
+      packet.push_back(static_cast<uint8_t>(sizeof(T)));
+      
       const uint8_t *ptr = reinterpret_cast<const uint8_t *>(&data);
       packet.insert(packet.end(), ptr, ptr + sizeof(T));
-
-      // 5. 压入校验
-      // 校验范围：从功能码 (Index 1) 开始，到数据段结束
-      uint8_t checksum = calculate_checksum(packet.data() + 1, packet.size() - 1);
+      
+      // 校验和覆盖范围: ID, 长度, 数据
+      // packet[2] 是 ID.
+      uint8_t checksum = calculate_checksum(packet.data() + 2, packet.size() - 2);
       packet.push_back(checksum);
-
-      // 6. 压入帧尾
-      packet.push_back(kTailByte);
 
       return packet;
     }
 
     /**
      * @brief 接收数据投喂口
-     *
-     * 将从串口接收到的原始数据放入内部缓冲区。
-     *
-     * @param raw_data 原始数据字节流
      */
-    void feed_data(const std::vector<uint8_t> &raw_data)
+    void feed_data(const uint8_t* data, size_t len)
     {
-      // Bulk insert is efficient for deque (amortized O(1) at both ends)
-      rx_buffer_.insert(rx_buffer_.end(), raw_data.begin(), raw_data.end());
+        // 简单实现：循环写入
+        for (size_t i = 0; i < len; ++i) {
+            size_t next_head = (head_ + 1) % capacity_;
+            if (next_head != tail_) { // 未满
+                ring_buffer_[head_] = data[i];
+                head_ = next_head;
+            } else {
+                // 缓冲区溢出，丢弃数据或处理错误
+                // 目前简单丢弃新数据
+                break; 
+            }
+        }
+    }
+    
+    // std::vector 的兼容包装器
+    void feed_data(const std::vector<uint8_t>& data) {
+        feed_data(data.data(), data.size());
     }
 
     /**
      * @brief 解析数据包
-     *
-     * 从缓冲区中提取完整的数据包。如果缓冲区中有完整且校验通过的数据包，则返回 true 并填充 out_packet。
-     *
-     * @param out_packet [out] 解析成功的数据包
-     * @return true 解析成功
-     * @return false 缓冲区数据不足或未找到有效数据包
      */
     bool parse_packet(Packet &out_packet)
     {
-      while (rx_buffer_.size() >= sizeof(FrameHeader) + sizeof(FrameTail))
-      {
-        if (rx_buffer_[0] != kHeadByte)
+        while (data_available() >= MIN_PACKET_SIZE) 
         {
-          rx_buffer_.pop_front();
-          continue;
+            // 1. 快速搜寻帧头: 寻找 0x5A, 0xA5
+            // 检查 tail 和 (tail+1)%cap
+            uint8_t b1 = ring_buffer_[tail_];
+            uint8_t b2 = ring_buffer_[(tail_ + 1) % capacity_];
+            
+            if (b1 != FRAME_HEADER1 || b2 != FRAME_HEADER2) {
+                // 不是帧头，滑动窗口
+                tail_ = (tail_ + 1) % capacity_;
+                continue;
+            }
+            
+            // 发现帧头在 tail_, tail_+1
+            // 需要检查是否有足够的数据获取长度信息
+            // Header(2) + ID(1) + Len(1) = 需要4个字节来知道长度
+            
+            if (data_available() < 4) return false; // 等待更多数据
+            
+            uint8_t id_byte = ring_buffer_[(tail_ + 2) % capacity_];
+            uint8_t len_byte = ring_buffer_[(tail_ + 3) % capacity_];
+            
+            size_t total_len = 2 + 1 + 1 + len_byte + 1; // Header(2) + ID(1) + Len(1) + Payload(N) + CRC(1)
+            
+            if (data_available() < total_len) return false; // 等待完整数据包
+            
+            // 检查 CRC
+            // 我们需要对 ID, Len, Payload 进行 CRC校验。
+            // ID 在偏移 2, Len 在 3, Payload 在 4...
+            // 直接在环形缓冲区上计算更好，但需要处理回绕。
+            
+            uint8_t calc_crc = 0;
+            // 迭代范围: ID (index 2) 到 payload 结束
+            // 范围: ID, Len, Payload. 
+            // 起始索引: (tail_ + 2) % capacity_
+            // 计数: 1 + 1 + len_byte = 2 + len_byte
+            
+            size_t crc_start_idx = (tail_ + 2) % capacity_;
+            size_t crc_count = 2 + len_byte;
+            
+            for (size_t i = 0; i < crc_count; ++i) {
+                uint8_t byte = ring_buffer_[(crc_start_idx + i) % capacity_];
+                calc_crc = CRC8_TABLE[calc_crc ^ byte];
+            }
+            
+            uint8_t recv_crc = ring_buffer_[(tail_ + total_len - 1) % capacity_];
+            
+            if (calc_crc == recv_crc) {
+                 // 有效数据包
+                 out_packet.id = static_cast<PacketID>(id_byte);
+                 out_packet.payload.resize(len_byte);
+                 
+                 // 复制载荷
+                 size_t payload_start = (tail_ + 4) % capacity_;
+                 for (size_t i = 0; i < len_byte; ++i) {
+                     out_packet.payload[i] = ring_buffer_[(payload_start + i) % capacity_];
+                 }
+                 
+                 // 消耗数据包
+                 tail_ = (tail_ + total_len) % capacity_;
+                 return true;
+            } else {
+                 // CRC 无效，仅丢弃帧头的第一个字节以重新搜索 (也许 0xA5 是下一个头的开始?)
+                 // 实际上严格来说如果我们匹配了 0x5A 0xA5 但CRC失败，这可能是垃圾数据。
+                 // 但安全起见滑动 1 字节。
+                 tail_ = (tail_ + 1) % capacity_;
+            }
+            
         }
-
-        // FrameHeader: head(0), id(1), length(2)
-        uint8_t id_byte = rx_buffer_[1];
-        uint8_t data_len = rx_buffer_[2];
-        size_t total_len = sizeof(FrameHeader) + data_len + sizeof(FrameTail);
-
-        if (rx_buffer_.size() < total_len)
-        {
-          return false; // 数据不够，等待下一次
-        }
-
-        if (rx_buffer_[total_len - 1] != kTailByte)
-        {
-          rx_buffer_.pop_front();
-          continue;
-        }
-
-        // 检查校验和
-        uint8_t calc_sum = calculate_checksum(rx_buffer_.begin() + 1, data_len + 2);
-        uint8_t recv_sum = rx_buffer_[total_len - 2];
-
-        if (calc_sum != recv_sum)
-        {
-          rx_buffer_.pop_front();
-          continue;
-        }
-
-        // 提取数据
-        out_packet.id = static_cast<PacketID>(id_byte);
-        out_packet.data_buffer.clear();
-
-        // 如果当前容量不足以容纳数据，进行预留
-        if (out_packet.data_buffer.capacity() < data_len) {
-          out_packet.data_buffer.reserve(data_len);
-        }
-        out_packet.data_buffer.assign(
-            rx_buffer_.begin() + sizeof(FrameHeader),
-            rx_buffer_.begin() + sizeof(FrameHeader) + data_len);
-
-        // 移除已处理的数据
-        rx_buffer_.erase(rx_buffer_.begin(), rx_buffer_.begin() + total_len);
-        return true;
-      }
-      return false;
+        return false;
     }
+    
+    size_t data_available() const {
+        if (head_ >= tail_) return head_ - tail_;
+        return capacity_ - tail_ + head_;
+    }
+    
+    
   };
 
 }

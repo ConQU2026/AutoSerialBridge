@@ -1,42 +1,58 @@
-protocol_settings:
-  head_byte_A: 0xAA
-  head_byte_B: 0x55
-  checksum: "CRC8" 
+# 1. 全局配置
+config:
+  baudrate: 921600
+  buffer_size: 4096
+  head_byte_1: 0x5A      # 双帧头 1
+  head_byte_2: 0xA5      # 双帧头 2
+  checksum: "CRC8"       # 校验算法 TODO: 支持CRC16或简单的SUM8
 
+# 2. 类型映射
 type_mappings:
   f32: "float"
   i32: "int32_t"
   u8:  "uint8_t"
   u16: "uint16_t"
   u32: "uint32_t"
-  bool: "uint8_t"
 
+# 3. 消息列表
 messages:
-  # 0x00 Reserved for Handshake
+  # === 握手与心跳===
   - name: "Handshake"
     id: 0x00
-    direction: "bidirectional"
-    ros_msg: "std_msgs/msg/UInt32"
-    topic: "/serial/handshake"
+    direction: "both"
+    sub_topic: "/serial/handshake_cmd"
+    pub_topic: "/serial/handshake"
+    ros_msg: "std_msgs/msg/UInt32" # 用于调试或记录
     fields:
-      - { proto: "proto_hash", type: "u32", ros: "data" }
+      - { proto: "protocol_hash", type: "u32", ros: "data" } # 协议文件的 Hash 值
 
-  # 0x01 Heartbeat
   - name: "Heartbeat"
     id: 0x01
-    direction: "bidirectional"
+    direction: "both"
+    sub_topic: "/serial/heartbeat_cmd"
+    pub_topic: "/serial/heartbeat"
     ros_msg: "std_msgs/msg/UInt8"
-    topic: "/serial/heartbeat"
     fields:
-      - { proto: "counter", type: "u8", ros: "data" }
+      - { proto: "count", type: "u8", ros: "data" }
 
-  # Example Control Command
+  # === 业务消息 ===
+  # ROS -> MCU: 速度控制
   - name: "CmdVel"
     id: 0x03
     direction: "tx"
-    ros_msg: "geometry_msgs/msg/Twist"
-    topic: "/cmd_vel"
+    sub_topic: "/cmd_vel"
+    ros_msg: "geometry_msgs/msg/Twist" # 指定 ROS 消息类型
     fields:
+      # proto: MCU 结构体成员名 | type: MCU 类型 | ros: ROS 消息成员路径
       - { proto: "linear_x",  type: "f32", ros: "linear.x" }
-      - { proto: "linear_y",  type: "f32", ros: "linear.y" }
       - { proto: "angular_z", type: "f32", ros: "angular.z" }
+
+  # MCU -> ROS: 里程计反馈
+  - name: "ChassisStatus"
+    id: 0x04
+    direction: "rx"
+    pub_topic: "/odom"
+    ros_msg: "nav_msgs/msg/Odometry"
+    fields:
+      - { proto: "pos_x", type: "f32", ros: "pose.pose.position.x" }
+      - { proto: "pos_y", type: "f32", ros: "pose.pose.position.y" }

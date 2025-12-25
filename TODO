@@ -1,0 +1,208 @@
+# 任务一: yaml 显示增加sub的topic名字, pub的topic名字, 然后删除对应的猜测topic的代码, 直接使用yaml中设置的topic
+
+# 任务二: 生成mcu的解析器
+```
+1. **生成的 (`protocol.h`)**：包含了 `struct` 定义、`enum` ID 和 CRC 表。这只解决了“数据长什么样”的问题。
+2. **缺失的 (`protocol.c`)**：缺失了核心的**状态机解析代码**。电控端收到一堆 `0x5A 0xA5...` 的字节流后，如何把它们拼成一个完整的结构体，这部分逻辑目前还是空白的。
+
+为了达成“全自动化”的目标，我们需要让脚本生成一个**纯 C 语言、无硬件依赖**的解析器。
+
+### 解决方案：升级 `codegen.py` 生成 MCU 解析器
+
+我为你准备了更新后的 Python 函数，将其添加到你的 `codegen.py` 中。它会生成一个 `mcu_protocol.c`，包含一个状态机解析器，电控组只需要在串口中断里调用 `protocol_fsm_feed` 即可。
+
+#### 1. 修改后的 `codegen.py` (新增生成 C 实现部分)
+
+请将以下函数添加到你的 `codegen.py` 中，并在 `main` 函数里调用它。
+
+```python
+def generate_mcu_source(messages, output_path):
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    with open(output_path, 'w') as f:
+        f.write("#include \"protocol.h\"\n")
+        f.write("#include <string.h>\n\n")
+        
+        # --- 1. 定义解析器状态机 ---
+        f.write("""
+// 解析器状态定义
+typedef enum {
+    STATE_WAIT_HEADER1,
+    STATE_WAIT_HEADER2,
+    STATE_WAIT_ID,
+    STATE_WAIT_LEN,
+    STATE_WAIT_DATA,
+    STATE_WAIT_CRC
+} State;
+
+static State rx_state = STATE_WAIT_HEADER1;
+static uint8_t rx_buffer[256]; // 最大包长
+static uint8_t rx_cnt = 0;
+static uint8_t rx_data_len = 0;
+static uint8_t rx_id = 0;
+static uint8_t rx_crc = 0;
+
+// CRC8 计算函数 (查表法)
+uint8_t calculate_crc8(const uint8_t* data, uint8_t len, uint8_t initial_crc) {
+    uint8_t crc = initial_crc;
+    for (uint8_t i = 0; i < len; i++) {
+        crc = CRC8_TABLE[crc ^ data[i]];
+    }
+    return crc;
+}
+""")
+
+        # --- 2. 生成回调函数原型 ---
+        f.write("\n// 用户需要实现的回调函数 (弱定义或外部声明)\n")
+        for msg in messages:
+            if msg['direction'] == 'tx' or msg['direction'] == 'bidirectional':
+                # MCU 接收方向 (ROS -> MCU)
+                f.write(f"void on_receive_{msg['name']}(const Packet_{msg['name']}* pkt);\n")
+        
+        # --- 3. 核心状态机函数 ---
+        f.write("""
+/**
+ * @brief 协议解析状态机，在串口中断或轮询中调用此函数处理每个接收到的字节
+ * @param byte 接收到的单个字节
+ */
+void protocol_fsm_feed(uint8_t byte) {
+    switch (rx_state) {
+        case STATE_WAIT_HEADER1:
+            if (byte == FRAME_HEADER1) {
+                rx_state = STATE_WAIT_HEADER2;
+                rx_crc = 0; // CRC 重置 (假设CRC不包含Header1，根据你的定义调整)
+            }
+            break;
+            
+        case STATE_WAIT_HEADER2:
+            if (byte == FRAME_HEADER2) {
+                rx_state = STATE_WAIT_ID;
+            } else {
+                rx_state = STATE_WAIT_HEADER1; // 重置
+            }
+            break;
+            
+        case STATE_WAIT_ID:
+            rx_id = byte;
+            rx_crc = CRC8_TABLE[0 ^ rx_id]; // 开始计算 CRC (假设包含 ID)
+            rx_state = STATE_WAIT_LEN;
+            break;
+            
+        case STATE_WAIT_LEN:
+            rx_data_len = byte;
+            rx_crc = CRC8_TABLE[rx_crc ^ rx_data_len]; // CRC 包含 Len
+            rx_cnt = 0;
+            if (rx_data_len > 0) {
+                rx_state = STATE_WAIT_DATA;
+            } else {
+                rx_state = STATE_WAIT_CRC; // 数据长度为0的情况
+            }
+            break;
+            
+        case STATE_WAIT_DATA:
+            rx_buffer[rx_cnt++] = byte;
+            rx_crc = CRC8_TABLE[rx_crc ^ byte]; // CRC 包含 Data
+            if (rx_cnt >= rx_data_len) {
+                rx_state = STATE_WAIT_CRC;
+            }
+            break;
+            
+        case STATE_WAIT_CRC:
+            if (byte == rx_crc) {
+                // 校验通过，分发数据
+                switch (rx_id) {
+""")
+        # --- 4. 自动生成分发逻辑 ---
+        for msg in messages:
+             if msg['direction'] == 'tx' or msg['direction'] == 'bidirectional':
+                f.write(f"                    case PACKET_ID_{msg['name'].upper()}:\n")
+                f.write(f"                        if (rx_data_len == sizeof(Packet_{msg['name']})) {{\n")
+                f.write(f"                            on_receive_{msg['name']}((Packet_{msg['name']}*)rx_buffer);\n")
+                f.write(f"                        }}\n")
+                f.write(f"                        break;\n")
+
+        f.write("""
+                    default:
+                        break;
+                }
+            }
+            // 无论校验成功与否，都重置状态
+            rx_state = STATE_WAIT_HEADER1;
+            break;
+            
+        default:
+            rx_state = STATE_WAIT_HEADER1;
+            break;
+    }
+}
+""")
+
+        # --- 5. 生成发送辅助函数 ---
+        f.write("\n// --- 发送函数 ---\n")
+        f.write("// 外部依赖：用户必须实现 void serial_write_byte(uint8_t byte);\n")
+        f.write("extern void serial_write_byte(uint8_t byte);\n\n")
+        
+        for msg in messages:
+            if msg['direction'] == 'rx' or msg['direction'] == 'bidirectional':
+                # MCU 发送方向 (MCU -> ROS)
+                f.write(f"void send_{msg['name']}(const Packet_{msg['name']}* pkt) {{\n")
+                f.write(f"    uint8_t header[4] = {{FRAME_HEADER1, FRAME_HEADER2, PACKET_ID_{msg['name'].upper()}, sizeof(Packet_{msg['name']})}};\n")
+                f.write(f"    uint8_t crc = 0;\n")
+                f.write(f"    // Send Header\n")
+                f.write(f"    for(int i=0; i<4; i++) {{ serial_write_byte(header[i]); }}\n")
+                f.write(f"    \n")
+                f.write(f"    // Calc CRC part 1\n")
+                f.write(f"    crc = CRC8_TABLE[crc ^ header[2]]; // ID\n")
+                f.write(f"    crc = CRC8_TABLE[crc ^ header[3]]; // Len\n")
+                f.write(f"    \n")
+                f.write(f"    // Send Data & Calc CRC\n")
+                f.write(f"    const uint8_t* data = (const uint8_t*)pkt;\n")
+                f.write(f"    for(int i=0; i<sizeof(Packet_{msg['name']}); i++) {{\n")
+                f.write(f"        serial_write_byte(data[i]);\n")
+                f.write(f"        crc = CRC8_TABLE[crc ^ data[i]];\n")
+                f.write(f"    }}\n")
+                f.write(f"    \n")
+                f.write(f"    // Send CRC\n")
+                f.write(f"    serial_write_byte(crc);\n")
+                f.write(f"}}\n")
+
+```
+
+#### 2. 电控组该如何使用？
+
+生成 `protocol.c` 和 `protocol.h` 后，电控组的代码写起来会非常简单：
+
+```c
+// main.c (电控代码示例)
+#include "protocol.h"
+
+// 1. 实现串口发送接口 (给生成的 send_xxx 函数用)
+void serial_write_byte(uint8_t byte) {
+    HAL_UART_Transmit(&huart1, &byte, 1, 10);
+}
+
+// 2. 实现接收回调 (生成的解析器会自动调用这里)
+void on_receive_CmdVel(const Packet_CmdVel* pkt) {
+    // 自动转换好了，直接用！
+    set_motor_speed(pkt->linear_x, pkt->angular_z);
+}
+
+// 3. 在串口中断里喂数据
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART1) {
+        // 把收到的字节喂给状态机
+        protocol_fsm_feed(received_byte);
+    }
+}
+
+// 4. 发送数据
+void main_loop() {
+    Packet_ChassisStatus status;
+    status.pos_x = 1.0f;
+    status.pos_y = 2.0f;
+    send_ChassisStatus(&status); // 一行代码发送
+    HAL_Delay(10);
+}
+
+```
+
