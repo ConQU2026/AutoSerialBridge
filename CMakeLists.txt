@@ -23,7 +23,6 @@ set(dependencies
   rclcpp_components
   serial_driver
   geometry_msgs
-  # TODO: 添加其他依赖 (如 pcl_conversions, cv_bridge)
 )
 
 foreach(dep ${dependencies})
