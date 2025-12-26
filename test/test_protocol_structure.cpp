@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "protocol.h"
-#include "serial_pkg/generated_config.hpp"
+#include "auto_serial_bridge/generated_config.hpp"
 
 // 验证生成的 C 头文件是否有效并符合预期
 

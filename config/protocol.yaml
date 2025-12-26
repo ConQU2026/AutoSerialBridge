@@ -1,7 +1,14 @@
+# 0. ROS2 参数配置 
+serial_controller:
+  ros__parameters:
+    port: "/dev/stm32"
+    baudrate: &baudrate 115200
+    timeout: 0.1
+
 # 1. 全局配置
 config:
-  baudrate: 921600
-  buffer_size: 4096
+  baudrate: *baudrate
+  buffer_size: 256
   head_byte_1: 0x5A      # 双帧头 1
   head_byte_2: 0xA5      # 双帧头 2
   checksum: "CRC8"       # 校验算法 TODO: 支持CRC16或简单的SUM8
@@ -38,21 +45,25 @@ messages:
   # === 业务消息 ===
   # ROS -> MCU: 速度控制
   - name: "CmdVel"
-    id: 0x04
+    id: 0x03
     direction: "tx"
     sub_topic: "/cmd_vel"
     ros_msg: "geometry_msgs/msg/Twist" # 指定 ROS 消息类型
     fields:
       # proto: MCU 结构体成员名 | type: MCU 类型 | ros: ROS 消息成员路径
       - { proto: "linear_x",  type: "f32", ros: "linear.x" }
+      - { proto: "linear_y", type: "f32", ros: "linear.y" }
       - { proto: "angular_z", type: "f32", ros: "angular.z" }
 
-  # MCU -> ROS: 里程计反馈
-  - name: "ChassisStatus"
-    id: 0x05
-    direction: "rx"
-    pub_topic: "/odom"
-    ros_msg: "nav_msgs/msg/Odometry"
-    fields:
-      - { proto: "pos_x", type: "f32", ros: "pose.pose.position.x" }
-      - { proto: "pos_y", type: "f32", ros: "pose.pose.position.y" }
+
+  # # MCU -> ROS: 里程计反馈
+  # - name: "ChassisStatus"
+  #   id: 0x05
+  #   direction: "rx"
+  #   pub_topic: "/odom"
+  #   ros_msg: "nav_msgs/msg/Odometry"
+  #   fields:
+  #     - { proto: "pos_x", type: "f32", ros: "pose.pose.position.x" }
+  #     - { proto: "pos_y", type: "f32", ros: "pose.pose.position.y" }
+
+

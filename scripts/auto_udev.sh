@@ -1,10 +1,13 @@
+#!/bin/bash
+
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 CYAN='\033[0;36m'
 NC='\033[0m' 
 
-# 检查Root权限
-if [ "$EUID" -ne 0 ]; then
+# --- 修正点 1: 更稳健的 Root 权限检查 ---
+# 使用 id -u 替代 $EUID，确保兼容性
+if [ "$(id -u)" -ne 0 ]; then
   echo -e "${RED}[错误] 请使用 sudo 运行此脚本！${NC}"
   echo "示例: sudo ./auto_udev.sh"
   exit 1
@@ -23,6 +26,11 @@ fi
 
 # 获取目标别名
 read -p "请输入想要绑定的别名 (不带 /dev/, 例如 stm32): " ALIAS_NAME
+
+if [ -z "$ALIAS_NAME" ]; then
+    echo -e "${RED}[错误] 别名不能为空！${NC}"
+    exit 1
+fi
 
 # 提取设备信息
 echo -e "\n正在读取 $SOURCE_DEV 的硬件信息..."
@@ -55,7 +63,12 @@ else
     RULE_CONTENT="KERNEL==\"tty*\", SUBSYSTEMS==\"usb\", ATTRS{idVendor}==\"$VID\", ATTRS{idProduct}==\"$PID\", MODE=\"0666\", SYMLINK+=\"$ALIAS_NAME\""
 fi
 
-echo "$RULE_CONTENT" > "$RULES_FILE"
+# --- 修正点 2: 捕获写入错误 ---
+# 如果写入失败（例如权限不足漏网、磁盘满等），直接退出
+if ! echo "$RULE_CONTENT" > "$RULES_FILE"; then
+    echo -e "${RED}[致命错误] 无法写入规则文件！请确保你拥有写入 /etc/udev/rules.d/ 的权限。${NC}"
+    exit 1
+fi
 
 # 5. 重载规则
 echo -e "正在重载 Udev 规则..."
@@ -69,5 +82,6 @@ if [ -e "/dev/$ALIAS_NAME" ]; then
     ls -l "/dev/$ALIAS_NAME"
 else
     echo -e "\n${RED}[警告] 规则已生成，但暂未检测到 /dev/$ALIAS_NAME。${NC}"
-    echo "请尝试重新拔插设备。"
+    echo "1. 请尝试重新拔插设备。"
+    echo "2. 检查是否有其他规则冲突。"
 fi

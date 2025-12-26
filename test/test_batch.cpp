@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include <vector>
 #include <chrono>
-#include "serial_pkg/packet_handler.hpp"
+#include "auto_serial_bridge/packet_handler.hpp"
 #include "protocol.h"
 
 using namespace auto_serial_bridge;

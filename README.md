@@ -9,10 +9,8 @@
 **Auto Serial Bridge** 是一个致力于提升 ROS2 与嵌入式设备之间串口通信开发效率的工具。
 
 鉴于 microROS 在某些场景下的配置繁琐与不稳定，本项目旨在提供一个**轻量级、自动化、可配置**的替代方案。只需在 `protocol.yaml` 配置文件中定义通信协议，即可自动生成 ROS2 端的 C++ 解析代码以及嵌入式端的 C 代码。
-
-**核心优势：**
-*   **高效开发**：无需手动编写繁琐的序列化/反序列化代码。
-*   **配置即代码**：通过 YAML 文件集中管理协议，修改协议只需改配置并重新编译（无需花时间在电控组和视觉组之间调试通信）。
+*   **高效开发**：无需花费太多时间在与电控的协议沟通上
+*   **配置即代码**：通过 YAML 文件集中管理协议，修改协议只需改配置并重新编译
 *   **无缝对接**：自动生成 ROS2 消息与嵌入式结构体，消除协议不一致带来的隐患。
 *   **高性能**：基于 C++ 实现的高效串口通信与数据解包。
 
@@ -21,10 +19,10 @@
 
 ```text
 auto_serial_bridge/
-├── config/              # 配置文件目录 (protocol.yaml)
+├── config/              # 配置文件目录 
 ├── include/             # 头文件 (含自动生成的协议头文件)
 ├── launch/              # ROS2 Launch 启动文件
-├── mcu_output/          # 自动生成的 MCU 端 C 代码 (直接拷贝给电控组)
+├── mcu_output/          # 自动生成的 MCU 端 C 代码 
 ├── scripts/             # 代码生成与辅助脚本
 ├── src/                 # 核心源代码
 └── test/                # 单元测试
@@ -33,24 +31,15 @@ auto_serial_bridge/
 ## 快速开始
 
 ### 1. 环境依赖
-*   Ubuntu 22.04
-*   ROS2 Humble
-*   Python 3
+
+仅在`ROS2 Humble`进行过测试
 
 ```bash
-sudo apt install ros-humble-serial-driver libasio-dev ros-humble-rclcpp-components ros-humble-io-context python3-serial socat
+sudo apt install ros-humble-serial-driver libasio-dev ros-humble-rclcpp-components ros-humble-io-context 
+sudo apt install python3-serial socat
 ```
 
-### 2. 编译项目
-
-在你的 ROS2 工作空间根目录下：
-
-```bash
-colcon build --packages-select auto_serial_bridge
-source install/setup.bash
-```
-
-### 3. 配置串口权限
+### 2. 配置串口权限(可选)
 
 使用本项目提供的脚本自动设置 udev 规则（只需运行一次）：
 
@@ -60,32 +49,34 @@ sudo ./auto_udev.sh
 # 重新插拔串口设备后生效
 ```
 
-### 4. 运行节点
-
-```bash
-ros2 launch auto_serial_bridge launch_serial.py
-```
-
-## 配置说明 (protocol.yaml)
+### 2. 配置`protocol.yaml`文件
 
 核心配置文件位于 `config/protocol.yaml`。可通过修改此文件来增删改数据协议，**修改后重新编译即可生效**。
 
-### 全局配置
+#### 参数配置
 ```yaml
+# ROS2 参数配置 
+serial_controller:
+  ros__parameters:
+    port: "/dev/stm32"
+    baudrate: &baudrate 115200
+    timeout: 0.1
+
+# 全局配置
 config:
-  baudrate: 921600       # 串口波特率
-  buffer_size: 4096      # 缓冲区大小
-  head_byte_1: 0x5A      # 帧头1
-  head_byte_2: 0xA5      # 帧头2
-  checksum: "CRC8"       # 校验算法
+  baudrate: *baudrate
+  buffer_size: 256
+  head_byte_1: 0x5A      # 双帧头 1
+  head_byte_2: 0xA5      # 双帧头 2
+  checksum: "CRC8"       # 校验算法 TODO: 支持CRC16或简单的SUM8
 ```
 
-### 消息定义
+#### 消息定义
 可以在 `messages` 列表中定义多个消息类型：
 
 ```yaml
 messages:
-  - name: "CmdVel"                 # 消息名称（生成类名）
+  - name: "CmdVel"                 # 消息名称
     id: 0x04                       # 消息ID (唯一)
     direction: "tx"                # 传输方向: tx (ROS->MCU), rx (MCU->ROS), both(双向)
     sub_topic: "/cmd_vel"          # 订阅话题 (仅 tx/both 有效)
@@ -96,16 +87,45 @@ messages:
       - { proto: "angular_z", type: "f32", ros: "angular.z" }
 ```
 
-## MCU 端集成
+#### MCU 端集成
 
 当你在 ROS2 端运行 `colcon build` 后，`mcu_output` 目录下会自动更新生成的 C 代码：
 *   `protocol.c`: 协议打包与解包实现。
 *   `protocol.h`: 协议结构体与函数声明。
 
 **电控开发人员集成步骤：**
+```C
+// 类似cubemx, 写在这种块之间的代码将受到保护不会被覆盖(当重新生成代码时)
+/* USER CODE BEGIN  */
+/* USER CODE END  */
+```
+
+> [!WARNING]
+> 注意, 目前版本强制要求上下位机进行握手(验证版本hash), 所以电控需要在第一次接收到数据之后, 使用生成的protocol.c中的send_handshake( )发送一次握手包。
+
+
 1.  将 `mcu_output` 文件夹内容复制到单片机工程中。
 2.  实现 `serial_write` 等底层发送接口。
 3.  调用 `protocol.h` 中的 `pack_*` 和 `unpack_*` 接口进行数据收发。
+
+
+### 2. 编译项目
+
+在你的 ROS2 工作空间根目录下：
+
+```bash
+colcon build --packages-select auto_serial_bridge
+source install/setup.bash
+```
+
+
+## 4. 运行
+在配置完yaml文件并且编译成功之后, 即可直接通过运行节点的方式启动, 也可以通过launhch的方式启动(推荐)
+
+我们提供了两种示例, 一种是使用节点的方式启动, 一种是使用组件化方式启动
+
+## DEBUG说明
+开启该节点的debug模式之后, 会打印当前接收到的十六进制数据包以及发送的十六进制数据包.
 
 ## 测试
 
@@ -119,3 +139,8 @@ colcon test --packages-select auto_serial_bridge --event-handlers console_direct
 *   **v1.0**: 实现了基于 `protocol.yaml` 的全自动代码生成。
     *   仅需在 `protocol.yaml` 中添加需要的协议, 即可自动生成对应的 ROS2 和电控的代码。
 *   **Beta**: 初始验证版本，需在代码中手动添加相应的数据解析逻辑。
+
+
+## TODO
+- 增加多个校验协议可选项
+- 预设多个串口通信配置, 用于适配不同场景, 比如easy模式追求快速与简单, 就去掉握手和校验和等

@@ -2,9 +2,9 @@
 #include <sstream>
 #include <iomanip>
 
-#include "serial_pkg/serial_controller.hpp"
-#include "serial_pkg/generated_bindings.hpp" // 生成的绑定代码
-#include "serial_pkg/generated_config.hpp"   // 生成的配置常数
+#include "auto_serial_bridge/serial_controller.hpp"
+#include "auto_serial_bridge/generated_bindings.hpp" // 生成的绑定代码
+#include "auto_serial_bridge/generated_config.hpp"   // 生成的配置常数
 #include "rclcpp_components/register_node_macro.hpp"
 
 namespace auto_serial_bridge
@@ -19,6 +19,11 @@ namespace auto_serial_bridge
 
     get_parameters();
     
+    // 初始化并存储 Publisher
+    auto pubs = std::make_shared<auto_serial_bridge::generated::ProtocolPublishers>();
+    pubs->init(this);
+    protocol_impl_ = pubs;
+
     // 注册所有 ROS 订阅者
     auto_serial_bridge::generated::register_all(this);
 
@@ -45,7 +50,7 @@ namespace auto_serial_bridge
                 Packet_Handshake pkt;
                 pkt.protocol_hash = PROTOCOL_HASH;
                 send_packet(PACKET_ID_HANDSHAKE, pkt);
-                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Waiting for Handshake (Hash: 0x%08X)...", PROTOCOL_HASH);
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "协议握手失败或者暂未收到下位机握手 (Hash: 0x%08X)...", PROTOCOL_HASH);
             } else {
                 // 发送心跳包
                 // Packet_Heartbeat pkt;
@@ -62,7 +67,7 @@ namespace auto_serial_bridge
 
   void SerialController::get_parameters()
   {
-    this->declare_parameter<std::string>("port", "/dev/ttyACM0");
+    this->declare_parameter<std::string>("port", "/dev/ttyUSB0");
     this->declare_parameter<int>("baudrate", auto_serial_bridge::config::DEFAULT_BAUDRATE);
     this->declare_parameter<double>("timeout", 0.1);
 
@@ -87,6 +92,7 @@ namespace auto_serial_bridge
     }
     catch (const std::exception &e)
     {
+      RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Failed to open serial port '%s': %s", port_.c_str(), e.what());
       return false;
     }
   }
@@ -129,7 +135,7 @@ namespace auto_serial_bridge
           state_ = State::RUNNING;
           RCLCPP_INFO(this->get_logger(), "Handshake SUCCESS! Protocol Hash Matched. Entering RUNNING state.");
       } else {
-          RCLCPP_ERROR(this->get_logger(), "Handshake FAILED! Hash mismatch. Local: 0x%08X, Remote: 0x%08X", PROTOCOL_HASH, data->protocol_hash);
+          RCLCPP_INFO(this->get_logger(), "Hash mismatch : Local: 0x%08X, Remote: 0x%08X", PROTOCOL_HASH, data->protocol_hash);
       }
   }
 
@@ -142,19 +148,28 @@ namespace auto_serial_bridge
         {
           if (bytes_read > 0)
           {
+             // [DEBUG] 打印接收到的原始数据
+             std::stringstream ss;
+             for (size_t i = 0; i < bytes_read; ++i) {
+                 ss << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(buffer[i]) << " ";
+             }
+             RCLCPP_INFO(this->get_logger(), "RECV HEX: %s", ss.str().c_str());
+
              {
                  std::lock_guard<std::mutex> lock(rx_mutex_);
-                 packet_handler_.feed_data(buffer.data(), bytes_read); //零拷贝意图（虽然 buffer 是 vector）
+                 packet_handler_.feed_data(buffer.data(), bytes_read); 
              }
              
              Packet pkt;
              while (packet_handler_.parse_packet(pkt)) {
                  if (pkt.id == PACKET_ID_HANDSHAKE) {
                      process_handshake(pkt);
-                     // 允许将握手包也转发给 ROS? 生成的代码确实暴露了它。
-                     auto_serial_bridge::generated::dispatch_packet(this, static_cast<uint8_t>(pkt.id), pkt.payload);
+                     
+                     auto pubs = static_cast<auto_serial_bridge::generated::ProtocolPublishers*>(protocol_impl_.get());
+                     auto_serial_bridge::generated::dispatch_packet(*pubs, static_cast<uint8_t>(pkt.id), pkt.payload);
                  } else if (state_ == State::RUNNING) {
-                     auto_serial_bridge::generated::dispatch_packet(this, static_cast<uint8_t>(pkt.id), pkt.payload);
+                     auto pubs = static_cast<auto_serial_bridge::generated::ProtocolPublishers*>(protocol_impl_.get());
+                     auto_serial_bridge::generated::dispatch_packet(*pubs, static_cast<uint8_t>(pkt.id), pkt.payload);
                  } else {
                      // 如果未握手成功，丢弃数据包
                  }
@@ -175,14 +190,27 @@ namespace auto_serial_bridge
   {
     if (!is_connected_ || !driver_ || !driver_->port()->is_open()) return;
     
-    // 在 WAITING_HANDSHAKE 状态下, 只允许发送握手数据包?
-    // 如果我们需要严格的输出控制，可以在这里过滤。
-    // 实现:
-    // 数据包类型在第二个字节? 我们不想在这里解析。
-    // 依赖其他地方的逻辑。
+    // 在 WAITING_HANDSHAKE 状态下, 只允许发送握手数据包
+    if (state_ == State::WAITING_HANDSHAKE) {
+        // 数据包结构: [HEAD1][HEAD2][ID]...
+        // ID 位于第3个字节 (索引 2)
+        if (packet_bytes.size() > 2) {
+             uint8_t id_byte = packet_bytes[2];
+             if (static_cast<PacketID>(id_byte) != PACKET_ID_HANDSHAKE) {
+                 return; // 过滤掉非握手包
+             }
+        }
+    }
     
     try
     {
+        // [DEBUG] 打印发送的原始数据
+        std::stringstream ss;
+        for (const auto& byte : packet_bytes) {
+            ss << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte) << " ";
+        }
+        RCLCPP_INFO(this->get_logger(), "SEND HEX: %s", ss.str().c_str());
+
         driver_->port()->async_send(packet_bytes);
     }
     catch (const std::exception &e)

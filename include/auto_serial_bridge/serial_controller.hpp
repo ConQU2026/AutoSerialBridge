@@ -14,8 +14,8 @@
 #include "serial_driver/serial_driver.hpp"
 #include "io_context/io_context.hpp"
 
-#include "serial_pkg/packet_handler.hpp"
-#include "serial_pkg/protocol.hpp"
+#include "auto_serial_bridge/packet_handler.hpp"
+#include "auto_serial_bridge/protocol.hpp"
 
 namespace auto_serial_bridge
 {
@@ -97,5 +97,8 @@ namespace auto_serial_bridge
     std::string port_;
     uint32_t baudrate_;
     double timeout_;
+
+    // 存储生成的 ProtocolPublishers 结构体 (使用 void* 避免循环依赖)
+    std::shared_ptr<void> protocol_impl_;
   };
 } // namespace auto_serial_bridge

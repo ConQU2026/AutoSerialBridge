@@ -31,4 +31,4 @@ _codeql_detected_source_root
 
 # output_file
 mcu_output/
-include/serial_pkg/generated_bindings.hpp
+include/auto_serial_bridge/generated_bindings.hpp

@@ -1,5 +1,0 @@
-serial_controller:
-  ros__parameters:
-    port : "/dev/stm32"
-    baudrate: 115200
-    timeout: 0.1

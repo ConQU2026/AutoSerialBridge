@@ -1,17 +1,16 @@
 cmake_minimum_required(VERSION 3.8)
-project(auto_serial_bridge) # TODO: 修改为你的包名
+project(auto_serial_bridge)
 
 # ==============================================================================
-# 1. 编译选项 (Compiler Options)
+# 1. 编译选项 
 # ==============================================================================
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
 # ==============================================================================
-# 2. 依赖管理 (Dependencies)
+# 2. 依赖管理 
 # ==============================================================================
-
 
 set(dependencies
   ament_cmake
@@ -30,23 +29,22 @@ foreach(dep ${dependencies})
 endforeach()
 
 # ==============================================================================
-# 2.5 代码生成 (Code Generation)
+# 2.5 代码生成
 # ==============================================================================
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 set(PROTOCOL_YAML "${CMAKE_CURRENT_SOURCE_DIR}/config/protocol.yaml")
 set(CODEGEN_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/scripts/codegen.py")
 set(MCU_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/mcu_output/protocol.h")
-set(ROS_BINDINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/serial_pkg/generated_bindings.hpp")
+set(MCU_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/mcu_output/protocol.c")
+set(ROS_BINDINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/auto_serial_bridge/generated_bindings.hpp")
+set(CPP_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/include/auto_serial_bridge/generated_config.hpp")
 
-add_custom_command(
-  OUTPUT ${MCU_HEADER} ${ROS_BINDINGS}
+add_custom_target(generate_protocol_code ALL
   COMMAND ${Python3_EXECUTABLE} ${CODEGEN_SCRIPT} ${PROTOCOL_YAML} ${CMAKE_CURRENT_SOURCE_DIR}
-  DEPENDS ${PROTOCOL_YAML} ${CODEGEN_SCRIPT}
-  COMMENT "Generating protocol code..."
+  BYPRODUCTS ${MCU_HEADER} ${ROS_BINDINGS} ${MCU_SOURCE} ${CPP_CONFIG}
+  COMMENT "Forcing protocol code regeneration..."
 )
-
-add_custom_target(generate_protocol_code DEPENDS ${MCU_HEADER} ${ROS_BINDINGS})
 
 # ==============================================================================
 # 3. 核心库构建
@@ -72,7 +70,7 @@ rclcpp_components_register_nodes(${PROJECT_NAME}_lib
 )
 
 # ==============================================================================
-# 4. 节点构建 (Node Executables)
+# 4. 节点构建 
 # ==============================================================================
 add_executable(serial_node
   src/serial_node.cpp
@@ -114,7 +112,7 @@ install(TARGETS ${targets}
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# 安装文件夹 (include, launch, config)
+# 安装文件夹
 if(IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include)
   install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/ DESTINATION include/)
 endif()
@@ -136,11 +134,12 @@ endif()
 # 6. 测试部分
 # ==============================================================================
 if(BUILD_TESTING)
-  # --- A. 代码风格检查
+
   # find_package(ament_lint_auto REQUIRED)
   # set(ament_cmake_copyright_FOUND TRUE)
   # set(ament_cmake_cpplint_FOUND TRUE)
   # ament_lint_auto_find_test_dependencies()
+
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
 
@@ -166,7 +165,7 @@ if(BUILD_TESTING)
 endif()
 
 # ==============================================================================
-# 7. 导出信息 (Export)
+# 7. 导出信息 
 # ==============================================================================
 ament_export_include_directories(include)
 ament_export_dependencies(${dependencies})

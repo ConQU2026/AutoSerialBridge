@@ -1,6 +1,6 @@
 #pragma once
 
-#include "serial_pkg/protocol.hpp"
+#include "auto_serial_bridge/protocol.hpp"
 #include <vector>
 #include <iostream>
 #include <algorithm>

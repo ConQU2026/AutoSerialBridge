@@ -1,9 +1,9 @@
-
 import yaml
 import os
 import sys
 import hashlib
 import argparse
+import re
 
 def generate_crc8_table():
     """生成CRC8查找表。
@@ -52,7 +52,44 @@ def get_c_type(yaml_type, type_mappings):
         return type_mappings[yaml_type]
     return yaml_type  # 兜底返回
 
-def generate_mcu_header(config, messages, type_mappings, protocol_hash, output_path):
+def extract_user_code(file_path):
+    """Extract user code blocks from an existing file.
+    
+    Args:
+        file_path: Path to the existing file.
+        
+    Returns:
+        A dictionary mapping block keys to their content (list of lines).
+    """
+    blocks = {}
+    if not os.path.exists(file_path):
+        return blocks
+        
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+        
+    pattern = re.compile(r'/\* USER CODE BEGIN (\w+) \*/(.*?)/\* USER CODE END \1 \*/', re.DOTALL)
+    matches = pattern.findall(content)
+    
+    for key, code in matches:
+        blocks[key] = code
+        
+    return blocks
+
+def render_block(blocks, key):
+    """Render a user code block.
+    
+    Args:
+        blocks: Dictionary of extracted blocks.
+        key: The key for the block.
+        
+    Returns:
+        Formatted string containing the user code block.
+    """
+    content = blocks.get(key, "\n")
+    return f"/* USER CODE BEGIN {key} */{content}/* USER CODE END {key} */\n"
+
+def generate_mcu_header(config, messages, type_mappings, protocol_hash, output_path, user_blocks):
     """生成MCU端使用的C语言头文件。
 
     Args:
@@ -61,6 +98,7 @@ def generate_mcu_header(config, messages, type_mappings, protocol_hash, output_p
         type_mappings: 类型映射字典。
         protocol_hash: 协议哈希值。
         output_path: 输出文件路径。
+        user_blocks: Extracted user code blocks.
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
@@ -68,10 +106,15 @@ def generate_mcu_header(config, messages, type_mappings, protocol_hash, output_p
         f.write("#pragma once\n")
         f.write("#include <stdint.h>\n")
         f.write("\n")
+        f.write(render_block(user_blocks, "Includes"))
+        f.write("\n")
+        
         f.write("// 协议哈希校验码\n")
         f.write(f"#define PROTOCOL_HASH 0x{protocol_hash:08X}\n")
         f.write("\n")
-        
+        f.write(render_block(user_blocks, "Private_Defines"))
+        f.write("\n")
+
         f.write("// 帧头定义\n")
         f.write(f"#define FRAME_HEADER1 {config['head_byte_1']}\n")
         f.write(f"#define FRAME_HEADER2 {config['head_byte_2']}\n")
@@ -95,6 +138,9 @@ def generate_mcu_header(config, messages, type_mappings, protocol_hash, output_p
         f.write("#pragma pack()\n")
         f.write("\n")
         
+        f.write(render_block(user_blocks, "User_Types"))
+        f.write("\n")
+        
         # 生成CRC8表
         table = generate_crc8_table()
         f.write("// CRC8查找表\n")
@@ -104,16 +150,18 @@ def generate_mcu_header(config, messages, type_mappings, protocol_hash, output_p
             f.write(f"    {line},\n")
         f.write("};\n")
 
-def generate_mcu_source(config, messages, output_path):
+def generate_mcu_source(config, messages, output_path, user_blocks):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     buffer_size = config.get('buffer_size', 256)
     
     with open(output_path, 'w') as f:
         f.write("#include \"protocol.h\"\n")
         f.write("#include <string.h>\n\n")
+        f.write(render_block(user_blocks, "Includes"))
+        f.write("\n")
         
         # --- 1. 定义解析器状态机 ---
-        f.write("""
+        c_code_template = """
 // 解析器状态定义
 typedef enum {
     STATE_WAIT_HEADER1,
@@ -139,14 +187,26 @@ uint8_t calculate_crc8(const uint8_t* data, uint8_t len, uint8_t initial_crc) {
     }
     return crc;
 }
-""")
+"""
+        f.write(c_code_template.replace("{buffer_size}", str(buffer_size)))
+        
+        f.write("\n")
+        f.write(render_block(user_blocks, "Private_Variables"))
+        f.write("\n")
 
         # --- 2. 生成回调函数原型 ---
-        f.write("\n// 用户需要实现的回调函数 (弱定义或外部声明)\n")
+        f.write("\n// 用户需要实现的回调函数\n")
         for msg in messages:
-            if msg['direction'] == 'tx' or msg['direction'] == 'both':
-                # MCU 接收方向 (ROS -> MCU)
-                f.write(f"void on_receive_{msg['name']}(const Packet_{msg['name']}* pkt);\n")
+            # Generate callback for ALL messages to support loopback/debugging/flexible config
+            func_name = f"on_receive_{msg['name']}"
+            f.write(f"__attribute__((weak)) void {func_name}(const Packet_{msg['name']}* pkt) {{\n")
+            f.write(render_block(user_blocks, func_name))
+            f.write("}\n")
+
+        
+        f.write("\n")
+        f.write(render_block(user_blocks, "Code_0"))
+        f.write("\n")
         
         # --- 3. 核心状态机函数 ---
         f.write("""
@@ -203,12 +263,13 @@ void protocol_fsm_feed(uint8_t byte) {
 """)
         # --- 4. 自动生成分发逻辑 ---
         for msg in messages:
-             if msg['direction'] == 'tx' or msg['direction'] == 'both':
-                f.write(f"                    case PACKET_ID_{msg['name'].upper()}:\n")
-                f.write(f"                        if (rx_data_len == sizeof(Packet_{msg['name']})) {{\n")
-                f.write(f"                            on_receive_{msg['name']}((Packet_{msg['name']}*)rx_buffer);\n")
-                f.write(f"                        }}\n")
-                f.write(f"                        break;\n")
+            # Generate parsing logic for ALL messages
+            f.write(f"                    case PACKET_ID_{msg['name'].upper()}:\n")
+            f.write(f"                        if (rx_data_len == sizeof(Packet_{msg['name']})) {{\n")
+            f.write(f"                            on_receive_{msg['name']}((Packet_{msg['name']}*)rx_buffer);\n")
+            f.write(f"                        }}\n")
+            f.write(f"                        break;\n")
+
 
         f.write("""
                     default:
@@ -228,32 +289,42 @@ void protocol_fsm_feed(uint8_t byte) {
 
         # --- 5. 生成发送辅助函数 ---
         f.write("\n// --- 发送函数 ---\n")
-        f.write("// 外部依赖：用户必须实现 void serial_write_byte(uint8_t byte);\n")
-        f.write("extern void serial_write_byte(uint8_t byte);\n\n")
+        f.write("// 外部依赖：用户必须实现 void serial_write(const uint8_t* data, uint16_t len);\n")
+        f.write("extern void serial_write(const uint8_t* data, uint16_t len);\n\n")
         
         for msg in messages:
-            if msg['direction'] == 'rx' or msg['direction'] == 'both':
                 # MCU 发送方向 (MCU -> ROS)
                 f.write(f"void send_{msg['name']}(const Packet_{msg['name']}* pkt) {{\n")
-                f.write(f"    uint8_t header[4] = {{FRAME_HEADER1, FRAME_HEADER2, PACKET_ID_{msg['name'].upper()}, sizeof(Packet_{msg['name']})}};\n")
+                f.write(f"    // Header(4) + Data(sizeof) + CRC(1)\n")
+                f.write(f"    uint8_t buffer[4 + sizeof(Packet_{msg['name']}) + 1];\n")
+                f.write(f"    uint16_t idx = 0;\n")
+                f.write(f"    \n")
+                f.write(f"    // 1. Prepare Header\n")
+                f.write(f"    buffer[idx++] = FRAME_HEADER1;\n")
+                f.write(f"    buffer[idx++] = FRAME_HEADER2;\n")
+                f.write(f"    buffer[idx++] = PACKET_ID_{msg['name'].upper()};\n")
+                f.write(f"    buffer[idx++] = sizeof(Packet_{msg['name']});\n")
+                f.write(f"    \n")
+                f.write(f"    // 2. Copy Data\n")
+                f.write(f"    memcpy(&buffer[idx], pkt, sizeof(Packet_{msg['name']}));\n")
+                f.write(f"    idx += sizeof(Packet_{msg['name']});\n")
+                f.write(f"    \n")
+                f.write(f"    // 3. Calculate CRC (ID + Len + Data)\n")
+                f.write(f"    // ID is at buffer[2]\n")
+                f.write(f"    // Count = 1(ID) + 1(Len) + sizeof(Data)\n")
                 f.write(f"    uint8_t crc = 0;\n")
-                f.write(f"    // Send Header\n")
-                f.write(f"    for(int i=0; i<4; i++) {{ serial_write_byte(header[i]); }}\n")
-                f.write(f"    \n")
-                f.write(f"    // Calc CRC part 1\n")
-                f.write(f"    crc = CRC8_TABLE[crc ^ header[2]]; // ID\n")
-                f.write(f"    crc = CRC8_TABLE[crc ^ header[3]]; // Len\n")
-                f.write(f"    \n")
-                f.write(f"    // Send Data & Calc CRC\n")
-                f.write(f"    const uint8_t* data = (const uint8_t*)pkt;\n")
-                f.write(f"    for(int i=0; i<sizeof(Packet_{msg['name']}); i++) {{\n")
-                f.write(f"        serial_write_byte(data[i]);\n")
-                f.write(f"        crc = CRC8_TABLE[crc ^ data[i]];\n")
+                f.write(f"    for(uint16_t i = 2; i < idx; i++) {{\n")
+                f.write(f"        crc = CRC8_TABLE[crc ^ buffer[i]];\n")
                 f.write(f"    }}\n")
+                f.write(f"    buffer[idx++] = crc;\n")
                 f.write(f"    \n")
-                f.write(f"    // Send CRC\n")
-                f.write(f"    serial_write_byte(crc);\n")
+                f.write(f"    // 4. Send Buffer\n")
+                f.write(f"    serial_write(buffer, idx);\n")
                 f.write(f"}}\n")
+                
+        f.write("\n")
+        f.write(render_block(user_blocks, "Code_1"))
+        f.write("\n")
 
 def generate_ros_bindings(messages, type_mappings, output_path):
     """生成ROS端使用的C++绑定代码。
@@ -274,7 +345,7 @@ def generate_ros_bindings(messages, type_mappings, output_path):
     with open(output_path, 'w') as f:
         f.write("#pragma once\n")
         f.write("#include <functional>\n")
-        f.write("#include \"serial_pkg/serial_controller.hpp\"\n")
+        f.write("#include \"auto_serial_bridge/serial_controller.hpp\"\n")
         for inc in includes:
              # inc 例如 "geometry_msgs/msg/Twist"
              parts = inc.split('/')
@@ -303,15 +374,6 @@ def generate_ros_bindings(messages, type_mappings, output_path):
         
         for msg in messages:
             if msg['direction'] == 'tx' or msg['direction'] == 'both':
-                # 注册订阅者 (ROS -> MCU)
-                # 需要将ROS消息转换为MCU结构体并发送
-                # 使用lambda表达式进行转换和发送绑定
-                
-                # 如果没有明确指定topic，使用默认规则
-                # 假设 protocol.yaml 中没有 topic 字段，我们根据消息名推断
-                
-                # Infer topic: /serial/{name} or /cmd_vel etc.
-                # Use lambda to bind.
                 
                 topic = msg.get('sub_topic')
                 if not topic:
@@ -343,8 +405,28 @@ def generate_ros_bindings(messages, type_mappings, output_path):
         
         f.write("}\n\n")
 
+        # 定义包含所有发布者的结构体
+        f.write("struct ProtocolPublishers {\n")
+        for msg in messages:
+            if msg['direction'] == 'rx' or msg['direction'] == 'both':
+                parts = msg['ros_msg'].split('/')
+                ros_type_cpp = f"{parts[0]}::{parts[1]}::{parts[2]}"
+                f.write(f"    rclcpp::Publisher<{ros_type_cpp}>::SharedPtr pub_{msg['name']};\n")
+        
+        f.write("\n    void init(rclcpp::Node* node) {\n")
+        for msg in messages:
+            if msg['direction'] == 'rx' or msg['direction'] == 'both':
+                parts = msg['ros_msg'].split('/')
+                ros_type_cpp = f"{parts[0]}::{parts[1]}::{parts[2]}"
+                topic = msg.get('pub_topic')
+                if not topic:
+                    raise ValueError(f"Message {msg['name']} missing 'pub_topic'")
+                f.write(f"        pub_{msg['name']} = node->create_publisher<{ros_type_cpp}>(\"{topic}\", 10);\n")
+        f.write("    }\n")
+        f.write("};\n\n")
+
         # 消息分发函数
-        f.write("inline void dispatch_packet(SerialController* node, uint8_t id, const std::vector<uint8_t>& data) {\n")
+        f.write("inline void dispatch_packet(ProtocolPublishers& pubs, uint8_t id, const std::vector<uint8_t>& data) {\n")
         f.write("    switch(id) {\n")
         for msg in messages:
             if msg['direction'] == 'rx' or msg['direction'] == 'both':
@@ -361,16 +443,9 @@ def generate_ros_bindings(messages, type_mappings, output_path):
                      ros_acc = field['ros']
                      f.write(f"            msg.{ros_acc} = pkt->{field['proto']};\n")
                 
-                snake_name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', msg['name'])
-                snake_name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', snake_name).lower()
-                topic = msg.get('pub_topic')
-                if not topic:
-                    raise ValueError(f"Message {msg['name']} missing 'pub_topic'")
-                
-                # 优化: 实际代码中应预先创建publisher
-                # 这里假设节点有动态创建或获取publisher的方法
-                # node->publish_message<MsgType>("topic", msg);
-                f.write(f"            node->publish_message<{ros_type_cpp}>(\"{topic}\", msg);\n")
+                f.write(f"            if (pubs.pub_{msg['name']}) {{\n")
+                f.write(f"                pubs.pub_{msg['name']}->publish(msg);\n")
+                f.write(f"            }}\n")
                 f.write(f"            break;\n")
                 f.write(f"        }}\n")
         f.write("    }\n")
@@ -406,10 +481,7 @@ def main():
         sys.exit(1)
         
     yaml_file = sys.argv[1]
-    output_dir = sys.argv[2] # 输出目录（基准目录）
-    
-    # 示例调用: codegen.py config/protocol.yaml .
-    # 生成 ./mcu_output/protocol.h 和 ./include/serial_pkg/generated_bindings.hpp
+    output_dir = sys.argv[2] 
     
     with open(yaml_file, 'r') as f:
         content = f.read()
@@ -428,17 +500,25 @@ def main():
         
     phash = calculate_protocol_hash(content)
     
+    # --- Read existing user code for header ---
+    mcu_header_path = os.path.join(output_dir, 'mcu_output', 'protocol.h')
+    header_user_blocks = extract_user_code(mcu_header_path)
+    
     generate_mcu_header(config_data['config'], config_data['messages'], config_data['type_mappings'], phash, 
-                        os.path.join(output_dir, 'mcu_output', 'protocol.h'))
+                        mcu_header_path, header_user_blocks)
+    
+    # --- Read existing user code for source ---
+    mcu_source_path = os.path.join(output_dir, 'mcu_output', 'protocol.c')
+    source_user_blocks = extract_user_code(mcu_source_path)
     
     generate_mcu_source(config_data['config'], config_data['messages'], 
-                        os.path.join(output_dir, 'mcu_output', 'protocol.c'))
+                        mcu_source_path, source_user_blocks)
                         
     generate_cpp_config(config_data['config'],
-                        os.path.join(output_dir, 'include', 'serial_pkg', 'generated_config.hpp'))
+                        os.path.join(output_dir, 'include', 'auto_serial_bridge', 'generated_config.hpp'))
                         
     generate_ros_bindings(config_data['messages'], config_data['type_mappings'], 
-                          os.path.join(output_dir, 'include', 'serial_pkg', 'generated_bindings.hpp'))
+                          os.path.join(output_dir, 'include', 'auto_serial_bridge', 'generated_bindings.hpp'))
 
 if __name__ == "__main__":
     main()
